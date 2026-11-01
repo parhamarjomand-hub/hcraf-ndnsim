@@ -16,7 +16,7 @@ EXPECTED = {
 }
 
 
-def inspect(path: Path, required: tuple[str, ...]) -> dict:
+def inspect(path: Path, required: tuple) -> dict:
     if not path.is_file():
         raise ValueError(f"Trace not found: {path}")
     if path.stat().st_size == 0:
