@@ -38,7 +38,7 @@ jobs:
           from pathlib import Path, PurePosixPath
           import zipfile
           archive = Path('hcraf_episode_sources.zip')
-          expected = '75bea79a27ceb6de949f77f43e0bef9f7404d53c18b73687db784a133afebb94'
+          expected = '6990199f51bfab4628bd736ff9f1a33649cdf1442be6d1fdb259e31c993b0c5b'
           if hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
               raise SystemExit('Source bundle hash mismatch: upload matching ZIP and workflow.')
           with zipfile.ZipFile(archive) as source:
