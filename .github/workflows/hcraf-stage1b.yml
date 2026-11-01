@@ -1,0 +1,77 @@
+name: HCRAF - Stage 1B Decision Instrumentation
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  episode-pilot:
+    name: Build ndnSIM and verify decision and link instrumentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+      - name: Install build prerequisites
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential python3 python3-setuptools \
+            python-is-python3 pkg-config libboost-all-dev libssl-dev \
+            libsqlite3-dev castxml
+      - name: Verify and unpack pilot source bundle
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib
+          from pathlib import Path, PurePosixPath
+          import zipfile
+          archive = Path('hcraf_stage1b_sources.zip')
+          expected = 'a3a28e466709ad8f2a84a6e69a9fd144ccff5c32a406a2fbae9ea7bc8412ac7b'
+          if hashlib.sha256(archive.read_bytes()).hexdigest() != expected:
+              raise SystemExit('Source bundle hash mismatch: upload matching ZIP and workflow.')
+          with zipfile.ZipFile(archive) as source:
+              for name in source.namelist():
+                  path = PurePosixPath(name)
+                  if path.is_absolute() or '..' in path.parts or path.parts[:2] != ('hcraf', 'episode'):
+                      raise SystemExit('Unsafe source bundle path')
+                  target = Path(name)
+                  if target.exists():
+                      raise SystemExit('Refusing to overwrite existing file: ' + name)
+              source.extractall('.')
+          PYCODE
+          cp hcraf_stage1b_sources.zip episode_output/source_bundle.zip
+      - name: Test recorder and reconstruction software
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s hcraf/episode/tests -v 2>&1 | tee episode_output/unit_tests.log
+      - name: Fetch pinned sources, instrument and compile
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build.sh 2>&1 | tee episode_output/build.log
+      - name: Run six scenarios twice and verify raw evidence
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run.sh 2>&1 | tee episode_output/run.log
+      - name: Record provenance even when a previous step failed
+        if: always()
+        run: python3 hcraf/episode/scripts/manifest.py "$GITHUB_WORKSPACE"
+      - name: Upload logs, raw events and verification reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1b-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: error
+          retention-days: 14
