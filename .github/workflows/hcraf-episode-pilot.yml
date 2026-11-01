@@ -56,6 +56,30 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m unittest discover -s hcraf/episode/tests -v 2>&1 | tee episode_output/unit_tests.log
+      - name: Restore full build including ns-3 header setup
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import hashlib
+          import json
+          path = Path('hcraf/episode/scripts/build.sh')
+          before = path.read_bytes()
+          text = before.decode('utf-8')
+          old = 'python3 ./waf -j 2 --targets=hcraf-episode-pilot'
+          new = 'python3 ./waf -j 2'
+          if text.count(old) != 1:
+              raise SystemExit('Unexpected build script: this fix requires source bundle v0.2.2')
+          path.write_text(text.replace(old, new), encoding='utf-8')
+          evidence = {
+              'fix': 'FULL_BUILD_FOR_NS3_HEADER_TASKS',
+              'before_sha256': hashlib.sha256(before).hexdigest(),
+              'after_sha256': hashlib.sha256(path.read_bytes()).hexdigest(),
+              'old_command': old,
+              'new_command': new
+          }
+          Path('episode_output/build_mode_fix.json').write_text(json.dumps(evidence, indent=2))
+          PYCODE
       - name: Fetch pinned sources, instrument and compile
         run: |
           set -euo pipefail
