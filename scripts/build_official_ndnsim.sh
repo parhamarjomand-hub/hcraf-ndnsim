@@ -8,9 +8,37 @@ mkdir -p "$OUT_DIR" "$SRC_DIR"
 
 printf '\n[1/4] Official source repositories\n'
 cd "$SRC_DIR"
-git clone --depth 1 https://github.com/named-data-ndnSIM/ns-3-dev.git ns-3
-git clone --depth 1 https://github.com/named-data-ndnSIM/pybindgen.git pybindgen
-git clone --depth 1 --recursive https://github.com/named-data-ndnSIM/ndnSIM.git ns-3/src/ndnSIM
+# Fetch the exact source commits from the successful pilot.
+fetch_pinned() {
+    local repo_url="$1"
+    local target_dir="$2"
+    local commit_sha="$3"
+
+    git init "$target_dir"
+    git -C "$target_dir" remote add origin "$repo_url"
+    git -C "$target_dir" fetch --depth 1 origin "$commit_sha"
+    git -C "$target_dir" checkout --detach "$commit_sha"
+
+    test "$(git -C "$target_dir" rev-parse HEAD)" = "$commit_sha"
+}
+
+fetch_pinned \
+    https://github.com/named-data-ndnSIM/ns-3-dev.git \
+    ns-3 \
+    1b3bab9b6dba5f1e616c0b286eb889e9ce3d5d59
+
+fetch_pinned \
+    https://github.com/named-data-ndnSIM/pybindgen.git \
+    pybindgen \
+    a619e22a1492e586f42a688b015c551ea1facd7b
+
+fetch_pinned \
+    https://github.com/named-data-ndnSIM/ndnSIM.git \
+    ns-3/src/ndnSIM \
+    90d50396654dabad54b6979f2dc8fa929ade544c
+
+git -C ns-3/src/ndnSIM submodule sync --recursive
+git -C ns-3/src/ndnSIM submodule update --init --recursive
 
 printf '\n[2/4] Record exact versions for reproducibility\n'
 {
