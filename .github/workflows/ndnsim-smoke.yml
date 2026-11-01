@@ -1,0 +1,61 @@
+name: HCRAF / ndnSIM cloud compatibility pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  ndnsim_smoke:
+    name: Build and run official ndnSIM examples
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+
+    steps:
+      - name: Get this project
+        uses: actions/checkout@v4
+
+      - name: Install ndnSIM prerequisite packages
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential python3 python3-setuptools \
+            python-is-python3 pkg-config libboost-all-dev libssl-dev \
+            libsqlite3-dev castxml
+          git --version
+          python3 --version
+          g++ --version | head -n 1
+
+      - name: Fetch official ndnSIM sources and compile
+        run: |
+          set -euo pipefail
+          mkdir -p pilot_output
+          bash scripts/build_official_ndnsim.sh 2>&1 | tee pilot_output/build.log
+
+      - name: Run official example simulations
+        run: |
+          set -euo pipefail
+          bash scripts/run_official_examples.sh 2>&1 | tee pilot_output/run.log
+
+      - name: Validate real trace files
+        run: |
+          set -euo pipefail
+          python3 scripts/verify_real_traces.py pilot_output 2>&1 | tee pilot_output/verification.log
+
+      - name: Export logs and trace artifacts, including on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-ndnsim-cloud-pilot-${{ github.run_number }}
+          path: pilot_output/
+          if-no-files-found: warn
+          retention-days: 14
