@@ -5,7 +5,7 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$PROJECT_DIR/ndnsim_sources"
 OUT_DIR="$PROJECT_DIR/pilot_output"
 mkdir -p "$OUT_DIR" "$SRC_DIR"
-
+ 
 printf '\n[1/4] Official source repositories\n'
 cd "$SRC_DIR"
 # Fetch the exact source commits from the successful pilot.
