@@ -1,0 +1,79 @@
+name: HCRAF - Stage 1R Packet Attribution
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packet-attribution:
+    name: Build pinned ndnSIM and audit NDN TLV packet-to-Episode join
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+      - name: Install build prerequisites
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential python3 python3-setuptools \
+            python-is-python3 pkg-config libboost-all-dev libssl-dev \
+            libsqlite3-dev castxml
+      - name: Verify and unpack Stage1R source bundle
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib
+          from pathlib import Path, PurePosixPath
+          import zipfile
+          archive=Path('hcraf_stage1r_sources.zip')
+          expected='92602634861f83cb41894295309c883d284f96870053de973e3046ae01f6f191'
+          if hashlib.sha256(archive.read_bytes()).hexdigest()!=expected:
+              raise SystemExit('Stage1R source bundle hash mismatch.')
+          with zipfile.ZipFile(archive) as source:
+              for name in source.namelist():
+                  path=PurePosixPath(name)
+                  if path.is_absolute() or '..' in path.parts or path.parts[:2]!=('hcraf','episode'):
+                      raise SystemExit('Unsafe source bundle path: '+name)
+                  if Path(name).exists():
+                      raise SystemExit('Refusing to overwrite source path: '+name)
+              source.extractall('.')
+          PYCODE
+          cp hcraf_stage1r_sources.zip episode_output/source_bundle.zip
+      - name: Test original code and 1R joins plus pure C++ TLV decoder
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s hcraf/episode/tests -v 2>&1 | tee episode_output/unit_tests.log
+          g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+            hcraf/episode/tests/wire_decode_driver.cpp -o /tmp/hcraf-stage1r-wire-tests
+          /tmp/hcraf-stage1r-wire-tests 2>&1 | tee episode_output/wire_tests.log
+      - name: Fetch verified sources, patch unchanged NFD and compile 1R pilot
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1r.sh 2>&1 | tee episode_output/build.log
+      - name: Run real Stage1R pilot and audit packet-to-episode joins
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1r.sh 2>&1 | tee episode_output/run.log
+      - name: Write hashes even on partial failure
+        if: always()
+        run: python3 hcraf/episode/scripts/manifest_stage1r.py "$GITHUB_WORKSPACE"
+      - name: Upload raw traces, attribution, source hashes and logs even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1r-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: error
+          retention-days: 14
