@@ -71,7 +71,7 @@ jobs:
                   name = i.filename
                   parts = PurePosixPath(name).parts
                   if i.is_dir(): continue
-                  if len(parts) < 3 or parts[0] != 'stage1s' or '..' in parts or name in seen or \
+                  if len(parts) < 2 or parts[0] != 'stage1s' or '..' in parts or name in seen or \
                      PurePosixPath(name).is_absolute() or stat.S_ISLNK(i.external_attr >> 16):
                       if parts[0] == 'stage1s': raise RuntimeError('Unsafe reference ZIP entry: '+name)
                       continue
