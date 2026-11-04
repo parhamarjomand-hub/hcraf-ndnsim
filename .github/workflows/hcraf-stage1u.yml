@@ -40,7 +40,7 @@ jobs:
           import hashlib, stat, zipfile
           from pathlib import Path, PurePosixPath
           archives = [
-              ('hcraf_stage1u_sources.zip', 'e84827778ace37d898736d9ce626ac5ffab58f950380e19dd4e0a1665ca53a9d'),
+              ('hcraf_stage1u_sources.zip', 'f6726d8a49eed5b851339c38bd1dbb543b4319425d823d082cdad90ba188ff27'),
               ('hcraf_stage1s_reference.zip', 'b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4')]
           for name, expected in archives:
               p = Path(name)
