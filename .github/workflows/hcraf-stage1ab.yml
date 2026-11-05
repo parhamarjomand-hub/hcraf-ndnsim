@@ -39,7 +39,7 @@ jobs:
           import hashlib,stat,zipfile
           from pathlib import Path, PurePosixPath
           source='hcraf_stage1ab_sources.zip'
-          source_sha='12bb6ee8d9755dcf638ff74b1498b2d67f9851a10bf9c804809cba3aa6c1bb15'
+          source_sha='ee7229a9f87e75efe38ac364377203c46f3dabfc5b92d631e9c361662981a0fa'
           reference='hcraf_stage1s_reference.zip'
           reference_sha='b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4'
           for name,expected in ((source,source_sha),(reference,reference_sha)):
