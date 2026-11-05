@@ -1,0 +1,122 @@
+name: HCRAF - Stage 1AD Boundary Attribution and Lifetime Pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage1ad:
+    name: Pinned development-only two-hop boundary pilot (no F3 training)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install build requirements
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          apt-get update 2>&1 | tee episode_output/apt_update.log
+          apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential python3 python3-setuptools \
+            python-is-python3 pkg-config libboost-all-dev libssl-dev \
+            libsqlite3-dev castxml time 2>&1 | tee episode_output/apt_install.log
+
+      - name: Verify pinned inputs and extract safely
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE' 2>&1 | tee episode_output/unpack.log
+          import hashlib,stat,zipfile
+          from pathlib import Path, PurePosixPath
+          names={
+           'source':('hcraf_stage1ad_sources.zip','6c1a937f3523effc03a58910588bc18f15fe85cb3267d1b4f617648a7893cb4d'),
+           'reference':('hcraf_stage1s_reference.zip','b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4')}
+          for role,(fn,expected) in names.items():
+              f=Path(fn)
+              if not f.is_file():raise RuntimeError('Missing pinned '+role+' input ZIP: '+fn)
+              digest=hashlib.sha256(f.read_bytes()).hexdigest()
+              if digest!=expected:raise RuntimeError('SHA256 mismatch for '+fn+': '+digest)
+              print(role,fn,digest)
+          for role,(fn,_) in names.items():
+              used=set()
+              with zipfile.ZipFile(fn) as archive:
+                  for entry in archive.infolist():
+                      n=entry.filename
+                      parts=PurePosixPath(n).parts
+                      if entry.is_dir():continue
+                      if role=='reference' and (not parts or parts[0]!='stage1s'):
+                          continue  # approved reference has harmless top-level metadata
+                      allowed=(len(parts)>=3 and parts[:2]==('hcraf','episode')) if role=='source' else (len(parts)>=2 and parts[0]=='stage1s')
+                      if (not allowed or n in used or PurePosixPath(n).is_absolute() or
+                          '..' in parts or stat.S_ISLNK(entry.external_attr>>16)):
+                          raise RuntimeError('Unsafe '+role+' ZIP entry: '+n)
+                      used.add(n)
+                      dst=Path(n) if role=='source' else Path('artifact')/n
+                      payload=archive.read(n)
+                      if dst.exists():
+                          if not dst.is_file() or dst.read_bytes()!=payload:
+                              raise RuntimeError('Conflicting source path: '+str(dst))
+                      else:
+                          dst.parent.mkdir(parents=True,exist_ok=True)
+                          dst.write_bytes(payload)
+              if not used:raise RuntimeError('Empty required ZIP: '+fn)
+              print(role,'extracted_files',len(used))
+          Path('episode_output/source_versions.txt').write_text(
+              '1AD.BOUNDARY_PILOT.0 development-only\n'
+              'sources_sha256='+names['source'][1][1]+'\n'
+              'reference_sha256='+names['reference'][1][1]+'\n')
+          PYCODE
+          cp hcraf_stage1ad_sources.zip episode_output/source_bundle.zip
+
+      - name: Run all Python and two standalone C++ regression tests
+        run: |
+          set -euo pipefail
+          HCRAF_STAGE1S_RUN_ROOT="$GITHUB_WORKSPACE/artifact/stage1s" \
+            python3 -m unittest discover -s hcraf/episode/tests -p 'test_*.py' -v \
+            2>&1 | tee episode_output/python_tests.log
+          g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+            hcraf/episode/tests/wire_decode_driver.cpp -o /tmp/hcraf-ad-wire-tests
+          /tmp/hcraf-ad-wire-tests 2>&1 | tee episode_output/wire_tests.log
+          g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+            hcraf/episode/tests/lp_stage1w_driver.cpp -o /tmp/hcraf-ad-lp-tests
+          /tmp/hcraf-ad-lp-tests 2>&1 | tee episode_output/lp_tests.log
+
+      - name: Build pinned ndnSIM NFD and independent 1AD pilot
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1ad.sh 2>&1 | tee episode_output/build.log
+
+      - name: Run 21 monitored development controls and 9 paired controls
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1ad.sh 2>&1 | tee episode_output/run.log
+
+      - name: Write provenance manifest or exact failure report
+        if: always()
+        run: |
+          mkdir -p episode_output
+          if [ -f hcraf/episode/scripts/manifest_stage1ad.py ]; then
+            python3 hcraf/episode/scripts/manifest_stage1ad.py "$GITHUB_WORKSPACE" \
+              > episode_output/manifest_step.log 2>&1 || echo 'Manifest generator failed; see manifest_step.log' > episode_output/MANIFEST_ERROR.txt
+          else
+            echo 'Source unpack failed before manifest script could be extracted; see unpack.log' > episode_output/PRE_UNPACK_FAILURE.txt
+          fi
+
+      - name: Upload complete or partial original ndnSIM evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1ad-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: error
+          retention-days: 14
