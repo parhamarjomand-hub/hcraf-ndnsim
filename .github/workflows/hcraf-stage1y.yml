@@ -1,0 +1,129 @@
+name: HCRAF - Stage 1Y Congestion Label Admissibility Controls
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage1y-controls:
+    name: Build pinned ndnSIM; run pre-registered 1Y controls and fail-closed label gate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Prepare evidence directory and install prerequisites
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          apt-get update 2>&1 | tee episode_output/apt_update.log
+          apt-get install -y --no-install-recommends \
+            ca-certificates git build-essential python3 python3-setuptools \
+            python-is-python3 pkg-config libboost-all-dev libssl-dev \
+            libsqlite3-dev castxml time 2>&1 | tee episode_output/apt_install.log
+
+      - name: Verify pinned ZIPs and unpack without overwriting changed files
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          python3 - <<'PYCODE' 2>&1 | tee episode_output/unpack.log
+          import hashlib, stat, zipfile
+          from pathlib import Path, PurePosixPath
+          archives = [
+              ('hcraf_stage1y_sources.zip', '7408759fc6387b194a4f20f3968ce0449f6000de8491bc16aeea0eea9e50a238'),
+              ('hcraf_stage1s_reference.zip', 'b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4')]
+          for name, expected in archives:
+              p = Path(name)
+              if not p.is_file(): raise RuntimeError('Missing pinned input ZIP: ' + name)
+              actual = hashlib.sha256(p.read_bytes()).hexdigest()
+              if actual != expected: raise RuntimeError('Pinned input checksum mismatch: ' + name + ' ' + actual)
+              print(name, actual)
+          with zipfile.ZipFile(archives[0][0]) as z:
+              seen = set()
+              for i in z.infolist():
+                  name = i.filename
+                  parts = PurePosixPath(name).parts
+                  if i.is_dir() or name in seen or len(parts) < 3 or parts[:2] != ('hcraf', 'episode') or \
+                     PurePosixPath(name).is_absolute() or '..' in parts or stat.S_ISLNK(i.external_attr >> 16):
+                      raise RuntimeError('Unsafe or duplicate source ZIP entry: ' + name)
+                  seen.add(name)
+                  dst = Path(name)
+                  original = z.read(name)
+                  if dst.exists():
+                      if not dst.is_file() or dst.read_bytes() != original:
+                          raise RuntimeError('Conflicting source file: ' + name)
+                  else:
+                      dst.parent.mkdir(parents=True, exist_ok=True)
+                      dst.write_bytes(original)
+          with zipfile.ZipFile(archives[1][0]) as z:
+              seen = set()
+              for i in z.infolist():
+                  name = i.filename
+                  parts = PurePosixPath(name).parts
+                  if i.is_dir(): continue
+                  if len(parts) < 2 or parts[0] != 'stage1s' or '..' in parts or name in seen or \
+                     PurePosixPath(name).is_absolute() or stat.S_ISLNK(i.external_attr >> 16):
+                      if parts[0] == 'stage1s': raise RuntimeError('Unsafe reference ZIP entry: '+name)
+                      continue
+                  seen.add(name)
+                  dst = Path('artifact') / name
+                  dst.parent.mkdir(parents=True, exist_ok=True)
+                  dst.write_bytes(z.read(name))
+              if not seen: raise RuntimeError('Reference 1S ZIP has no real stage1s trace files')
+          Path('episode_output/reference_stage1s_sha256.txt').write_text(archives[1][1]+'\n')
+          print('Source and original reference artifact verified; reference used only for prior regression tests')
+          PYCODE
+          cp hcraf_stage1y_sources.zip episode_output/source_bundle.zip
+
+      - name: Execute all previous and new regression tests
+        run: |
+          set -euo pipefail
+          HCRAF_STAGE1S_RUN_ROOT="$GITHUB_WORKSPACE/artifact/stage1s" \
+            python3 -m unittest discover -s hcraf/episode/tests -p 'test_*.py' -v \
+            2>&1 | tee episode_output/unit_tests.log
+          g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+            hcraf/episode/tests/wire_decode_driver.cpp -o /tmp/hcraf-stage1w-wire-tests
+          /tmp/hcraf-stage1w-wire-tests 2>&1 | tee episode_output/wire_tests.log
+          g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+            hcraf/episode/tests/lp_stage1w_driver.cpp -o /tmp/hcraf-stage1w-lp-tests
+          /tmp/hcraf-stage1w-lp-tests 2>&1 | tee episode_output/lp_wire_tests.log
+
+      - name: Build original pinned NFD and additive 1Y controls
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1y.sh 2>&1 | tee episode_output/build.log
+
+      - name: Run 30 real 1Y controls plus six matched no-instrumentation comparisons
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1y.sh 2>&1 | tee episode_output/run.log
+
+      - name: Write manifests and failure-stage diagnostics
+        if: always()
+        run: |
+          mkdir -p episode_output
+          if [ -f hcraf/episode/scripts/manifest_stage1y.py ]; then
+            python3 hcraf/episode/scripts/manifest_stage1y.py "$GITHUB_WORKSPACE" \
+              > episode_output/manifest_step.log 2>&1 || echo 'Manifest generation failed' > episode_output/MANIFEST_ERROR.txt
+          else
+            echo 'Source unpack unavailable; see unpack.log, apt_install.log and workflow step' > episode_output/PRE_UNPACK_FAILURE.txt
+          fi
+
+      - name: Upload complete or partial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1y-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: error
+          retention-days: 14
