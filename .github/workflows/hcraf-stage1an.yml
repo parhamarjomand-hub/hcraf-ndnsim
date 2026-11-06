@@ -1,0 +1,101 @@
+name: HCRAF - Stage 1AN Pre-Freeze Gate Audit (NO-GO Until 1AM)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit_1an:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository (read only)
+        uses: actions/checkout@v4
+
+      - name: Pin all three ZIP inputs by SHA256
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '6184985654c3676a7b6725c80df7cf190a66c19d69002d376c5cfe7db722bb15  hcraf_stage1an_sources.zip' | sha256sum -c -
+          echo '8d76e109a2300740deaff3d4f136388a9e6727f2f395f181c06a972ab1e2d174  hcraf_stage1ak_audit_reference.zip' | sha256sum -c -
+          echo 'baa4fe8a2ae49a0ae1a0cd129e614f1ca3f532b3869a8e6269a691f4a04e5db5  hcraf_stage1al_audit_reference.zip' | sha256sum -c -
+
+      - name: Check and extract read-only audit source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import zipfile,hashlib,json,pathlib
+          z=zipfile.ZipFile('hcraf_stage1an_sources.zip')
+          assert z.testzip() is None
+          names=z.namelist()
+          assert len(names)==len(set(names))
+          mf=json.loads(z.read('SHA256_MANIFEST.json'))
+          assert mf['GO_FREEZE'] is False and mf['F3_ready'] is False
+          assert set(names)==set(mf['file_sha256'])|{'SHA256_MANIFEST.json'}
+          for n,h in mf['file_sha256'].items():
+              assert '..' not in pathlib.PurePosixPath(n).parts and not n.startswith('/')
+              assert hashlib.sha256(z.read(n)).hexdigest()==h,n
+          for n in names:
+              dest=pathlib.Path('stage1an_checkout')/n
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              dest.write_bytes(z.read(n))
+          print('Source integrity PASS:',len(names)-1,'hashed files')
+          PYCODE
+
+      - name: Run standalone negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage1an_output
+          export HCRAF_1AN_AK_PATH="$PWD/hcraf_stage1ak_audit_reference.zip"
+          export HCRAF_1AN_AL_PATH="$PWD/hcraf_stage1al_audit_reference.zip"
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s stage1an_checkout/tests -p 'test_*.py' -v 2>&1 | tee stage1an_output/unit_tests.log
+
+      - name: Execute 1AN scientific gate decision (must be NO-GO)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 stage1an_checkout/scripts/prefreeze_1an.py \
+            --ak hcraf_stage1ak_audit_reference.zip \
+            --al hcraf_stage1al_audit_reference.zip \
+            --expected-sha-ak 8d76e109a2300740deaff3d4f136388a9e6727f2f395f181c06a972ab1e2d174 \
+            --expected-sha-al baa4fe8a2ae49a0ae1a0cd129e614f1ca3f532b3869a8e6269a691f4a04e5db5 \
+            --out stage1an_output 2>&1 | tee stage1an_output/audit.log
+          python3 - <<'PYCODE'
+          import json
+          obj=json.load(open('stage1an_output/readiness_decision.json'))
+          assert obj['decision']=='NO_GO_FREEZE_BLOCKED_1AM'
+          assert obj['F3_ready'] is False and obj['GO_FREEZE'] is False
+          assert obj['training_ready'] is False
+          assert obj['pilot_dataset_generation_authorized'] is False
+          print('Verified scientific NO-GO, no freeze and no dataset production.')
+          PYCODE
+
+      - name: Manifest for this cloud audit (never a training dataset)
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import pathlib,json,hashlib,os
+          root=pathlib.Path('stage1an_output');root.mkdir(exist_ok=True)
+          files={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in root.iterdir() if p.is_file() and p.name!='manifest.json'}
+          m={'stage':'1AN.PREFREEZE_GATE_AUDIT.0','github_sha':os.getenv('GITHUB_SHA'),
+              'github_run_id':os.getenv('GITHUB_RUN_ID'),'source_sha256':'6184985654c3676a7b6725c80df7cf190a66c19d69002d376c5cfe7db722bb15',
+              'ak_reference_sha256':'8d76e109a2300740deaff3d4f136388a9e6727f2f395f181c06a972ab1e2d174','al_reference_sha256':'baa4fe8a2ae49a0ae1a0cd129e614f1ca3f532b3869a8e6269a691f4a04e5db5',
+              'output_sha256':files,'GO_FREEZE':False,'F3_ready':False,
+              'training_ready':False,'Congestion':None,'FutureCongestion':None,
+              'new_ndnsim_simulations':0,'new_dataset_rows':0,'fully_pinned_environment':False}
+          (root/'manifest.json').write_text(json.dumps(m,sort_keys=True,indent=2)+'\n')
+          PYCODE
+
+      - name: Upload independent audit output, including NO-GO status
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1an-prefreeze-audit-${{ github.run_number }}
+          path: stage1an_output/
+          if-no-files-found: warn
