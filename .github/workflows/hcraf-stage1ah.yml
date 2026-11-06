@@ -1,0 +1,115 @@
+name: HCRAF - Stage 1AH Group-Aware Fragment Congestion Pilot
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stage1ah:
+    name: Pinned development-only audit ${{ matrix.topology }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        topology: [DEV_CHAIN_A, DEV_CHAIN_B]
+    container:
+      image: ubuntu:20.04
+      env:
+        DEBIAN_FRONTEND: noninteractive
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+      - name: Install build requirements
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          apt-get update 2>&1 | tee episode_output/apt_update.log
+          apt-get install -y --no-install-recommends ca-certificates git build-essential python3 python3-setuptools \
+            python-is-python3 pkg-config libboost-all-dev libssl-dev libsqlite3-dev castxml time \
+            2>&1 | tee episode_output/apt_install.log
+      - name: Verify pinned inputs and safely unpack
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE' 2>&1 | tee episode_output/unpack.log
+          from pathlib import Path, PurePosixPath
+          import hashlib,stat,zipfile
+          inputs={
+            'source':('hcraf_stage1ah_sources.zip','1fa699afcaea2e0c5a3fc57722fafd9595d888827464ad25780f280f62f6b645'),
+            'reference':('hcraf_stage1s_reference.zip','b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4'),
+          }
+          for role,(name,expected) in inputs.items():
+            f=Path(name)
+            if not f.is_file():raise RuntimeError('Missing pinned '+role+' ZIP: '+name)
+            digest=hashlib.sha256(f.read_bytes()).hexdigest()
+            if digest!=expected:raise RuntimeError('SHA256 mismatch for '+name+': '+digest)
+            print(role,name,digest)
+          for role,(name,_) in inputs.items():
+            used=set()
+            with zipfile.ZipFile(name) as archive:
+              for entry in archive.infolist():
+                n=entry.filename;parts=PurePosixPath(n).parts
+                if entry.is_dir():continue
+                if role=='reference' and (not parts or parts[0]!='stage1s'):
+                  continue # approved 1S reference has top-level metadata
+                allowed=(len(parts)>=3 and parts[:2]==('hcraf','episode')) if role=='source' else (len(parts)>=2 and parts[0]=='stage1s')
+                if not allowed or n in used or PurePosixPath(n).is_absolute() or '..' in parts or '\\' in n or stat.S_ISLNK(entry.external_attr >> 16):
+                  raise RuntimeError('Unsafe '+role+' entry: '+n)
+                used.add(n)
+                dst=Path(n) if role=='source' else Path('artifact')/n
+                payload=archive.read(n)
+                if dst.exists():
+                  if not dst.is_file() or dst.read_bytes()!=payload:
+                    raise RuntimeError('Conflicting extracted path: '+str(dst))
+                else:
+                  dst.parent.mkdir(parents=True,exist_ok=True)
+                  dst.write_bytes(payload)
+            if not used:raise RuntimeError('Empty required ZIP '+name)
+            print(role,'extracted_files',len(used))
+          Path('episode_output/source_versions.txt').write_text(
+            '1AH.GROUP_AWARE.0\nsource_sha256='+inputs['source'][1][1]+'\nreference_sha256='+inputs['reference'][1][1]+'\n')
+          PYCODE
+          cp hcraf_stage1ah_sources.zip episode_output/source_bundle.zip
+      - name: Python regression and independent C++ unit tests
+        run: |
+          set -euo pipefail
+          HCRAF_STAGE1S_RUN_ROOT="$GITHUB_WORKSPACE/artifact/stage1s" \
+            python3 -m unittest discover -s hcraf/episode/tests -p 'test_*.py' -v \
+            2>&1 | tee episode_output/python_tests.log
+          for driver in wire_decode_driver lp_stage1w_driver; do
+            g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+              "hcraf/episode/tests/${driver}.cpp" -o "/tmp/hcraf-af-${driver}"
+            "/tmp/hcraf-af-${driver}" 2>&1 | tee "episode_output/${driver}.log"
+          done
+      - name: Build pinned ndnSIM and append 1AH scratch pilot
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1ah.sh 2>&1 | tee episode_output/build.log
+      - name: Execute registered topology and paired controls
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1ah.sh "${{ matrix.topology }}" \
+            2>&1 | tee episode_output/run.log
+      - name: Always write provenance and error evidence
+        if: always()
+        run: |
+          mkdir -p episode_output
+          if [ -f hcraf/episode/scripts/manifest_stage1ah.py ]; then
+            python3 hcraf/episode/scripts/manifest_stage1ah.py "$GITHUB_WORKSPACE" "${{ matrix.topology }}" \
+              > episode_output/manifest_step.log 2>&1 || echo 'Manifest creation failed, see manifest_step.log' > episode_output/MANIFEST_ERROR.txt
+          else
+            echo 'Source extraction failed before manifest script; see unpack.log' > episode_output/PRE_UNPACK_FAILURE.txt
+          fi
+      - name: Upload complete or partial evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1ah-${{ matrix.topology }}-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: error
+          retention-days: 14
