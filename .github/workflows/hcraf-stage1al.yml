@@ -1,0 +1,94 @@
+name: HCRAF - Stage 1AL Cross-Face and UNKNOWN Evidence Replay
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stage1al:
+    name: Evidence replay of three Faces, two topologies, two directions (NO new ndnSIM)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout pinned inputs
+        uses: actions/checkout@v4
+      - name: Verify input hashes and extract approved source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage1al episode_output/stage1al
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import hashlib, zipfile, json
+          root=Path('.')
+          expected={'hcraf_stage1al_sources.zip':'bb0ac4cbe633d6e8a447e053dafccbb70f9c1002d02d38a5068c61a58f79a4ad',
+                    'hcraf_stage1ah_A_reference.zip':'49357bc1cd18aaf3ed3320f0e88eaf3e72a79456d40a35417eec45407488eb74',
+                    'hcraf_stage1ah_B_reference.zip':'4e596330dd54dc09050b7b0eeb9fb016d237e55ffa7084d584388f04676d4883'}
+          for name,checksum in expected.items():
+              p=root/name
+              if not p.is_file():raise SystemExit('MISSING_PINNED_1AL_INPUT: '+name)
+              if hashlib.sha256(p.read_bytes()).hexdigest()!=checksum:
+                  raise SystemExit('INVALID_1AL_INPUT_SHA256: '+name)
+          with zipfile.ZipFile(root/'hcraf_stage1al_sources.zip') as z:
+              if z.testzip() is not None:raise SystemExit('CORRUPT_1AL_SOURCE')
+              for info in z.infolist():
+                  path=Path(info.filename)
+                  if path.is_absolute() or '..' in path.parts or info.is_dir():
+                      raise SystemExit('INVALID_SOURCE_ENTRY: '+info.filename)
+                  dst=root/'stage1al'/path
+                  content=z.read(info)
+                  if dst.exists() and dst.read_bytes()!=content:raise SystemExit('CONFLICT_1AL_SOURCE')
+                  dst.parent.mkdir(parents=True,exist_ok=True)
+                  dst.write_bytes(content)
+          m=json.loads((root/'stage1al/SHA256_MANIFEST.json').read_text())
+          for name,digest in m['source_file_sha256'].items():
+              path=root/'stage1al'/name
+              if hashlib.sha256(path.read_bytes()).hexdigest()!=digest:
+                  raise SystemExit('SOURCE_FILE_MANIFEST_MISMATCH: '+name)
+          print('Stage1AL source and both original 1AH ZIPs verified')
+          PYCODE
+      - name: Run independent physical tamper and contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s stage1al/tests -p 'test_*.py' -v 2>&1 | tee episode_output/stage1al/contract_tests.log
+      - name: Cross-check 72 real 1AH runs, 3 Faces and DROP UNKNOWN
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 stage1al/scripts/crossface_audit_1al.py hcraf_stage1ah_A_reference.zip hcraf_stage1ah_B_reference.zip --out episode_output/stage1al | tee episode_output/stage1al/replay.log
+      - name: Check bitwise identical published CSV/JSON outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          import hashlib
+          for n in ('episode_scope_2160.csv','run_scope_72.csv','coverage_by_topology_face_regime.csv','summary.json'):
+              a=(Path('stage1al/output')/n).read_bytes()
+              b=(Path('episode_output/stage1al')/n).read_bytes()
+              if a!=b:raise SystemExit('STAGE1AL_NONREPRODUCIBLE_OUTPUT: '+n)
+          print('1AL all four registered scientific outputs byte-identical')
+          PYCODE
+      - name: Always write manifest even on partial failure
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p episode_output/stage1al
+          python3 - <<'PYCODE'
+          import pathlib,hashlib,json,os
+          out=pathlib.Path('episode_output/stage1al')
+          checks={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in out.iterdir() if p.is_file() and p.name!='manifest.json'}
+          m={'stage':'1AL.CROSS_FACE_SCOPE_AND_UNKNOWN_REPLAY.0',
+             'github_run_id':os.getenv('GITHUB_RUN_ID'),'github_sha':os.getenv('GITHUB_SHA'),
+             'source_sha256':'bb0ac4cbe633d6e8a447e053dafccbb70f9c1002d02d38a5068c61a58f79a4ad','reference_a_sha256':'49357bc1cd18aaf3ed3320f0e88eaf3e72a79456d40a35417eec45407488eb74',
+             'reference_b_sha256':'4e596330dd54dc09050b7b0eeb9fb016d237e55ffa7084d584388f04676d4883','output_sha256':checks,
+             'new_ndnsim_simulations':0,'GO_FREEZE':False,'F3_ready':False,'training_ready':False,
+             'Congestion':None,'FutureCongestion':None}
+          (out/'manifest.json').write_text(json.dumps(m,sort_keys=True,indent=2)+'\n')
+          PYCODE
+      - name: Upload audit results, tests and any failure logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1al-crossface-audit-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/stage1al/
+          retention-days: 30
