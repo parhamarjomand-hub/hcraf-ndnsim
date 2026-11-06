@@ -40,7 +40,7 @@ jobs:
           from pathlib import Path, PurePosixPath
           import hashlib,stat,zipfile
           inputs={
-            'source':('hcraf_stage1ah_sources.zip','1fa699afcaea2e0c5a3fc57722fafd9595d888827464ad25780f280f62f6b645'),
+            'source':('hcraf_stage1ah_sources.zip','4bb79b919a7edd6fd1d5a1493aea6777019ee3151fe3055220579410e8df9f4a'),
             'reference':('hcraf_stage1s_reference.zip','b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4'),
           }
           for role,(name,expected) in inputs.items():
@@ -90,6 +90,21 @@ jobs:
         run: |
           set -euo pipefail
           bash hcraf/episode/scripts/build_stage1ah.sh 2>&1 | tee episode_output/build.log
+      - name: Assert 1AH two-class NFD recorder scope before simulation
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import json
+          from pathlib import Path
+          src=Path('episode_sources/ns-3/src/ndnSIM/NFD/daemon/fw/forwarder.cpp')
+          log=Path('episode_output/nfd_stage1ah_scope_patch.json')
+          assert src.is_file() and log.is_file(), 'Missing stage1ah NFD source/patch evidence'
+          marker='m_hcrafRecorder.reset(new hcraf::Recorder(path, nodeId, "/hcraf"));'
+          assert src.read_text().count(marker)==1, 'NFD dual-class recorder not installed'
+          assert json.loads(log.read_text())['status']=='APPLIED_SCOPE_ONLY'
+          assert Path('episode_output/nfd_stage1ah_instrumentation.patch').stat().st_size>0
+          print('Stage1AH NFD dual-class /hcraf scope verified')
+          PYCODE
       - name: Execute registered topology and paired controls
         run: |
           set -euo pipefail
