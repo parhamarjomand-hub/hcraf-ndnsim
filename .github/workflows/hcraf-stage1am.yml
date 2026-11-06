@@ -1,0 +1,105 @@
+name: "HCRAF - Stage 1AM Temporal Snapshot and Censoring Preflight"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  audit_1am:
+    name: Chronology / local NFD features / censored horizons
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - name: Checkout repository read-only
+        uses: actions/checkout@v4
+
+      - name: Pin source and all scientific references
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "211cc6824e00a3c4b686aa3d488a68876b52676b1607804ba524bd071688afb3  hcraf_stage1am_sources.zip" | sha256sum -c -
+          echo "49357bc1cd18aaf3ed3320f0e88eaf3e72a79456d40a35417eec45407488eb74  hcraf_stage1ah_A_reference.zip" | sha256sum -c -
+          echo "4e596330dd54dc09050b7b0eeb9fb016d237e55ffa7084d584388f04676d4883  hcraf_stage1ah_B_reference.zip" | sha256sum -c -
+          echo "baa4fe8a2ae49a0ae1a0cd129e614f1ca3f532b3869a8e6269a691f4a04e5db5  hcraf_stage1al_audit_reference.zip" | sha256sum -c -
+
+      - name: Extract only SHA-approved source files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage1am_checkout stage1am_output
+          python3 - <<'PYCODE'
+          import pathlib,hashlib,json,zipfile
+          root=pathlib.Path('stage1am_checkout')
+          z=zipfile.ZipFile('hcraf_stage1am_sources.zip')
+          assert z.testzip() is None
+          names=z.namelist();assert len(names)==len(set(names))
+          mf=json.loads(z.read('SHA256_MANIFEST.json'))
+          assert mf['GO_FREEZE'] is False and mf['F3_ready'] is False
+          assert set(names)==set(mf['file_sha256'])|{'SHA256_MANIFEST.json'}
+          for n,h in mf['file_sha256'].items():
+              path=pathlib.PurePosixPath(n)
+              assert not n.startswith('/') and '..' not in path.parts
+              assert hashlib.sha256(z.read(n)).hexdigest()==h,n
+              dest=root.joinpath(*path.parts)
+              dest.parent.mkdir(parents=True,exist_ok=True)
+              dest.write_bytes(z.read(n))
+          print('Stage 1AM source preflight passed',len(names)-1,'hashed files')
+          PYCODE
+
+      - name: Run 1AM contractual and negative tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage1am_output
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s stage1am_checkout/tests -p 'test_*.py' -v 2>&1 | tee stage1am_output/unit_tests.log
+
+      - name: Independently audit real 1AH NFD decisions and 1AL UNKNOWN
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 stage1am_checkout/scripts/temporal_contract_1am.py \
+            --input-dir . --out stage1am_output 2>&1 | tee stage1am_output/audit.log
+          python3 - <<'PYCODE'
+          import json,csv
+          root='stage1am_output/'
+          s=json.load(open(root+'summary.json'))
+          assert s['verified_runs']==72 and s['real_decisions']==2160
+          assert s['online_candidate_state_rows']==6480 and s['target_decisions']==1080
+          assert s['retrospective_horizon_diagnostic_rows']==6480
+          assert s['censor_status_counts']=={
+            'EPISODE_TERMINATED_BEFORE_FULL_WINDOW':2592,
+            'INCOMPLETE_PATH_OR_DROP_UNKNOWN':3888}
+          assert s['Congestion'] is None and s['FutureCongestion'] is None
+          assert s['GO_FREEZE'] is False and s['F3_ready'] is False
+          with open(root+'horizon_censoring_6480.csv') as f:
+              c=list(csv.DictReader(f))
+          assert len(c)==6480 and all(row['F3_future_label']=='' for row in c)
+          print('PASS online-timestamp admissibility audit; scientific NO-GO preserved')
+          PYCODE
+
+      - name: Provenance and no-F3 scientific manifest
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path('stage1am_output');root.mkdir(exist_ok=True)
+          sh=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+          mf={'stage':'1AM.TEMPORAL_ONLINE_CONTRACT_PREFLIGHT.0',
+            'github_run_id':os.getenv('GITHUB_RUN_ID'),'github_sha':os.getenv('GITHUB_SHA'),
+            'source_sha256':"211cc6824e00a3c4b686aa3d488a68876b52676b1607804ba524bd071688afb3",
+            'reference_sha256':{'A':"49357bc1cd18aaf3ed3320f0e88eaf3e72a79456d40a35417eec45407488eb74",'B':"4e596330dd54dc09050b7b0eeb9fb016d237e55ffa7084d584388f04676d4883",'AL':"baa4fe8a2ae49a0ae1a0cd129e614f1ca3f532b3869a8e6269a691f4a04e5db5"},
+            'output_sha256':{p.name:sh(p) for p in root.iterdir() if p.is_file() and p.name!='manifest.json'},
+            'new_ndnsim_simulations':0,'created_training_rows':0,
+            'GO_FREEZE':False,'Congestion':None,'FutureCongestion':None,
+            'F3_ready':False,'training_ready':False,'fully_pinned_environment':False}
+          (root/'manifest.json').write_text(json.dumps(mf,sort_keys=True,indent=2)+'\n')
+          PYCODE
+
+      - name: Upload audit and blocked-gate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1am-temporal-audit-${{ github.run_number }}
+          path: stage1am_output/
+          if-no-files-found: warn
