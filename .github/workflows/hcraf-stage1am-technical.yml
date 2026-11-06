@@ -1,0 +1,103 @@
+name: "HCRAF - Stage 1AM Technical NFD Local Queue and Dispatch Pilot"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  technical_1am:
+    name: Pinned ndnSIM NFD live measurements / NO-FREEZE
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 220
+    steps:
+      - name: Install pinned-runtime build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update > /tmp/hcraf_1am_apt_update.log 2>&1
+          apt-get install -y --no-install-recommends git ca-certificates build-essential \
+            python3 python3-dev python3-setuptools python3-pip python3-pytest \
+            pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+            libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+            libevent-dev graphviz doxygen time > /tmp/hcraf_1am_apt_install.log 2>&1
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify approved inputs and unpack with SHA validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "767113d1ea654dd84ed779892e5013d87baf4661366c0a8e1530bed51e0af0e4  hcraf_stage1am_technical_sources.zip" | sha256sum -c -
+          echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
+          mkdir -p artifact/stage1s episode_output
+          cp /tmp/hcraf_1am_apt_update.log episode_output/apt_update.log
+          cp /tmp/hcraf_1am_apt_install.log episode_output/apt_install.log
+          python3 - <<'PYCODE' 2>&1 | tee episode_output/unpack.log
+          import zipfile, pathlib, hashlib
+          sources=zipfile.ZipFile('hcraf_stage1am_technical_sources.zip')
+          ref=zipfile.ZipFile('hcraf_stage1s_approved_reference.zip')
+          assert sources.testzip() is None and ref.testzip() is None
+          def unpack(z,destination,only_prefix=None):
+              names=z.namelist()
+              assert len(names)==len(set(names)), 'duplicate entry'
+              for name in names:
+                  if name.endswith('/') or (only_prefix and not name.startswith(only_prefix)):continue
+                  p=pathlib.PurePosixPath(name)
+                  assert not name.startswith('/') and '..' not in p.parts, 'zip slip'
+                  target=destination.joinpath(*p.parts)
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  data=z.read(name)
+                  if target.exists() and target.read_bytes()!=data:raise RuntimeError('Conflicting extracted path: '+str(target))
+                  target.write_bytes(data)
+              return len(names)
+          n=unpack(sources,pathlib.Path('.'))
+          m=unpack(ref,pathlib.Path('artifact'),only_prefix='stage1s/')
+          print('source entry count',n,'reference total entries',m)
+          PYCODE
+
+      - name: Test all original and new contracts before compilation
+        shell: bash
+        run: |
+          set -euo pipefail
+          HCRAF_STAGE1S_RUN_ROOT="$PWD/artifact/stage1s" \
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_*.py' -q \
+            > episode_output/python_tests.log 2>&1
+          cat episode_output/python_tests.log
+          for driver in wire_decode_driver lp_stage1w_driver; do
+            g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+              "hcraf/episode/tests/${driver}.cpp" -o "/tmp/${driver}"
+            "/tmp/${driver}" > "episode_output/${driver}.log" 2>&1
+          done
+          bash -n hcraf/episode/scripts/build_stage1am_technical.sh
+          bash -n hcraf/episode/scripts/run_stage1am_technical.sh
+
+      - name: Build original pinned ndnSIM/NFD plus additive timing instrumentation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_technical.sh > episode_output/build.log 2>&1
+          tail -45 episode_output/build.log
+
+      - name: Execute 24 development simulations and verify actual snapshots
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1am_technical.sh > episode_output/run.log 2>&1
+          cat episode_output/run.log
+
+      - name: Source, output and scientific NO-GO provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/manifest_stage1am_technical.py "$PWD"
+
+      - name: Upload original traces even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1am-technical-${{ github.run_number }}
+          path: episode_output/
+          if-no-files-found: warn
