@@ -40,7 +40,7 @@ jobs:
           from pathlib import Path, PurePosixPath
           import hashlib,stat,zipfile
           inputs={
-            'source':('hcraf_stage1ah_sources.zip','4bb79b919a7edd6fd1d5a1493aea6777019ee3151fe3055220579410e8df9f4a'),
+            'source':('hcraf_stage1ah_sources.zip','6d8b38abb5efcfe4cd794391e3e34fecd4643139dd9759b413e3b0b99c85be0c'),
             'reference':('hcraf_stage1s_reference.zip','b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4'),
           }
           for role,(name,expected) in inputs.items():
