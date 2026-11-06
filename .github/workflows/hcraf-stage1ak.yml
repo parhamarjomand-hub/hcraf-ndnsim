@@ -1,0 +1,84 @@
+name: HCRAF - Stage 1AK Selected Return Path Offline Evidence Audit
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  stage1ak:
+    name: Pinned 1AJ evidence replay (NO new ndnSIM simulation)
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout source inputs
+        uses: actions/checkout@v4
+      - name: Validate SHA-256 and unpack read-only evidence audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p stage1ak episode_output/stage1ak
+          python3 - <<'PYCODE'
+          import pathlib, hashlib, zipfile
+          root=pathlib.Path('.')
+          expected={'hcraf_stage1ak_sources.zip':'76b40efe67db493045ca0bc48f756f42e6e53bfa4a94df7f483a10245dcd2ebe', 'hcraf_stage1aj_reference.zip':'e218057cebe02b6b5fa826492559f2a7f2f731c9d4e2c475902dbfc74025a59e'}
+          for n,h in expected.items():
+              p=root/n
+              if not p.is_file(): raise SystemExit('MISSING_PINNED_INPUT: '+n)
+              if hashlib.sha256(p.read_bytes()).hexdigest()!=h: raise SystemExit('INPUT_HASH_MISMATCH: '+n)
+          with zipfile.ZipFile(root/'hcraf_stage1ak_sources.zip') as z:
+              if z.testzip() is not None: raise SystemExit('CORRUPT_1AK_SOURCE_ZIP')
+              for info in z.infolist():
+                  n=pathlib.PurePosixPath(info.filename)
+                  if n.is_absolute() or '..' in n.parts or info.is_dir():raise SystemExit('INVALID_SOURCE_ENTRY')
+                  dst=root/'stage1ak'/info.filename
+                  if dst.exists() and dst.read_bytes()!=z.read(info):raise SystemExit('CONFLICTING_SOURCE')
+                  dst.parent.mkdir(parents=True,exist_ok=True)
+                  dst.write_bytes(z.read(info))
+          print('Stage 1AK pinned artifact and source passed SHA-256 checks')
+          PYCODE
+      - name: Verify guardrails with 14 physical and tamper tests
+        shell: bash
+        env:
+          HCRAF_STAGE1AJ_REFERENCE: ${{ github.workspace }}/hcraf_stage1aj_reference.zip
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s stage1ak/tests -p 'test_*.py' -v 2>&1 | tee episode_output/stage1ak/unit_tests.log
+      - name: Replay exactly the approved Stage 1AJ artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 stage1ak/scripts/path_audit_1ak.py hcraf_stage1aj_reference.zip --out episode_output/stage1ak | tee episode_output/stage1ak/audit.log
+      - name: Verify output is bit-identical to registered offline audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import pathlib
+          names=('path_target_evidence.csv','run_summary.csv','paired_deltas.csv','horizon_censoring.csv','audit_summary.json')
+          for n in names:
+              expected=(pathlib.Path('stage1ak')/'output'/n).read_bytes()
+              observed=(pathlib.Path('episode_output/stage1ak')/n).read_bytes()
+              if expected!=observed:raise SystemExit('NONDETERMINISTIC_OR_DIFFERENT_OUTPUT: '+n)
+          print('All five registered Stage 1AK outputs reproduced exactly')
+          PYCODE
+      - name: Generate evidence manifest, including on failure
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p episode_output/stage1ak
+          python3 - <<'PYCODE'
+          import pathlib,hashlib,json,os
+          base=pathlib.Path('episode_output/stage1ak')
+          hashes={p.name:hashlib.sha256(p.read_bytes()).hexdigest() for p in base.iterdir() if p.is_file() and p.name!='manifest.json'}
+          doc={'stage':'1AK.SELECTED_RETURN_PATH_REPLAY.0','github_run_id':os.environ.get('GITHUB_RUN_ID'),
+               'github_commit':os.environ.get('GITHUB_SHA'),'source_sha256':'76b40efe67db493045ca0bc48f756f42e6e53bfa4a94df7f483a10245dcd2ebe',
+               'reference_sha256':'e218057cebe02b6b5fa826492559f2a7f2f731c9d4e2c475902dbfc74025a59e','output_sha256':hashes,
+               'GO_FREEZE':False,'F3_ready':False,'training_ready':False,
+               'Congestion':None,'FutureCongestion':None,'new_ndnsim_simulations':0}
+          (base/'manifest.json').write_text(json.dumps(doc,sort_keys=True,indent=2)+'\n')
+          PYCODE
+      - name: Upload complete or failed evidence logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1ak-offline-audit-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/stage1ak/
+          retention-days: 30
