@@ -1,4 +1,4 @@
-name: "HCRAF - Stage 1AM Nonzero Local Queue and Physical Future-Drop Pilot (v0.40.0)"
+name: "HCRAF - Stage 1AM Nonzero Local Queue and Physical Future-Drop Pilot (v0.40.1 verifier-only fix)"
 on:
   workflow_dispatch:
 permissions:
@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "d08bd11d1149650e23f688e8a752d235a676c37cd6305c6aad61ce5d55fa94aa  hcraf_stage1am_nonzero_sources.zip" | sha256sum -c -
+          echo "cd21147211bf367263b307b9695e1956a17608489a7c569ca85a9500b91489b3  hcraf_stage1am_nonzero_sources.zip" | sha256sum -c -
           echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
           mkdir -p artifact/stage1s episode_output
           cp /tmp/hcraf_1am_apt_update.log episode_output/apt_update.log
