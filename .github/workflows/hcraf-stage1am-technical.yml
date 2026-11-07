@@ -1,4 +1,4 @@
-name: "HCRAF - Stage 1AM Technical NFD Local Queue and Dispatch Pilot"
+name: "HCRAF - Stage 1AM Technical NFD Local Queue and Dispatch Pilot (v0.39.1 verifier fix)"
 on:
   workflow_dispatch:
 permissions:
@@ -29,7 +29,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "767113d1ea654dd84ed779892e5013d87baf4661366c0a8e1530bed51e0af0e4  hcraf_stage1am_technical_sources.zip" | sha256sum -c -
+          echo "8f4e01696f18845791013b3d9a92c1555d323ddd906f97297e19b164a7931752  hcraf_stage1am_technical_sources.zip" | sha256sum -c -
           echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
           mkdir -p artifact/stage1s episode_output
           cp /tmp/hcraf_1am_apt_update.log episode_output/apt_update.log
