@@ -1,0 +1,100 @@
+name: "HCRAF - Stage 1AM LP Group-Aware Return Data Fragment Evidence Pilot (v0.42.0)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  lp_return_1am:
+    name: 48 real ndnSIM runs / sender LP group reconstruction / DEV evidence / NO-FREEZE
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 250
+    steps:
+      - name: Install matching approved ndnSIM lineage dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update > /tmp/hcraf_lp_apt_update.log 2>&1
+          apt-get install -y --no-install-recommends git ca-certificates build-essential \
+            python3 python3-dev python3-setuptools python3-pip python3-pytest \
+            pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+            libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+            libevent-dev graphviz doxygen time > /tmp/hcraf_lp_apt_install.log 2>&1
+      - name: Checkout private GitHub repository
+        uses: actions/checkout@v4
+      - name: Verify pinned archive hashes, safe extraction and original Stage1S fixtures
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "9c3f1ea72a8738bc70a4161718243ebe496bb9b886c2038680a24ec095e2acc5  hcraf_stage1am_lp_return_sources.zip" | sha256sum -c -
+          echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
+          mkdir -p artifact/stage1s episode_output
+          cp /tmp/hcraf_lp_apt_update.log episode_output/apt_update.log
+          cp /tmp/hcraf_lp_apt_install.log episode_output/apt_install.log
+          python3 - <<'PYCODE' 2>&1 | tee episode_output/unpack.log
+          import pathlib,zipfile
+          def unpack(name,dest,prefix=None):
+              with zipfile.ZipFile(name) as z:
+                  assert z.testzip() is None,'zip damaged'
+                  names=z.namelist()
+                  assert len(names)==len(set(names)),'duplicate zip member'
+                  for item in names:
+                      if item.endswith('/') or (prefix and not item.startswith(prefix)):
+                          continue
+                      rel=pathlib.PurePosixPath(item)
+                      assert not item.startswith('/') and '..' not in rel.parts,'path traversal'
+                      target=dest.joinpath(*rel.parts)
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      content=z.read(item)
+                      if target.exists() and target.read_bytes()!=content:
+                          raise RuntimeError('CONFLICT_EXISTING_SOURCE: '+str(target))
+                      target.write_bytes(content)
+                  print(name,'entries',len(names))
+                  return len(names)
+          assert unpack('hcraf_stage1am_lp_return_sources.zip',pathlib.Path('.'))==242
+          unpack('hcraf_stage1s_approved_reference.zip',pathlib.Path('artifact'),prefix='stage1s/')
+          PYCODE
+      - name: Run all 534 Python contracts and three independent native C++ parsers
+        shell: bash
+        run: |
+          set -euo pipefail
+          HCRAF_STAGE1S_RUN_ROOT="$PWD/artifact/stage1s" \
+            PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+              -s hcraf/episode/tests -p 'test_*.py' -q \
+              > episode_output/python_tests.log 2>&1
+          tail -8 episode_output/python_tests.log
+          for driver in wire_decode_driver lp_stage1w_driver producer_receipt_nonce_driver; do
+            g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+              "hcraf/episode/tests/${driver}.cpp" -o "/tmp/${driver}"
+            "/tmp/${driver}" > "episode_output/${driver}.log" 2>&1
+          done
+          bash -n hcraf/episode/scripts/run_stage1am_lp_return.sh
+          bash -n hcraf/episode/scripts/build_stage1am_pathwide.sh
+      - name: Build approved ndnSIM/NFD and instrumented selected-path scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_pathwide.sh > episode_output/build.log 2>&1
+          tail -35 episode_output/build.log
+          cmp -s hcraf/episode/src/hcraf-stage1w-monitor.hpp \
+            episode_sources/ns-3/scratch/hcraf-stage1w-monitor.hpp
+      - name: Run 48 real paired DEV ndnSIM jobs and strict LP-group-aware adjudication
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1am_lp_return.sh > episode_output/run.log 2>&1
+          tail -35 episode_output/run.log
+      - name: Always emit full raw trace SHA-256 manifest and NO-GO provenance
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/manifest_stage1am_lp_return.py "$PWD"
+      - name: Preserve full raw ndnSIM traces even if an experiment fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1am-lp-return-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: warn
