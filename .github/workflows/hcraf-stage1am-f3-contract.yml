@@ -1,0 +1,98 @@
+name: "HCRAF - Stage 1AM F3 Scientific Contract Candidate Audit (v0.43.0)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  f3_contract_candidate:
+    name: Reproduce 1008 historical diagnostic windows / fail-closed NO-GO / no ndnSIM
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout private HCRAF repository
+        uses: actions/checkout@v4
+      - name: Check pinned source and reference SHA-256 and extract sources safely
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "04c956c3f5dfefa3cbd8e0543c20f77f2ae52d27908a8089565bbfd163ff2d1c  hcraf_stage1am_f3_contract_sources.zip" | sha256sum -c -
+          echo "fd67461518c42d418b925afd312055cf5927f907ddc593f30eac9b7c1604cb80  hcraf_stage1am_f3_evidence_reference.zip" | sha256sum -c -
+          mkdir -p artifact/f3_contract
+          python3 - <<'PYCODE' 2>&1 | tee artifact/f3_contract/extract.log
+          import hashlib, json, pathlib, stat, zipfile
+          name='hcraf_stage1am_f3_contract_sources.zip'
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None,'CRC_FAIL'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'DUPLICATE_ARCHIVE_MEMBER'
+              manifest=json.loads(z.read('hcraf_f3_contract/SOURCE_SHA256_MANIFEST.json'))
+              assert set(names)==set(manifest)|{'hcraf_f3_contract/SOURCE_SHA256_MANIFEST.json'},'EXTRA_OR_MISSING_SOURCE'
+              for member in names:
+                  if member.endswith('/'):continue
+                  path=pathlib.PurePosixPath(member)
+                  assert not member.startswith('/') and not any(x=='..' for x in path.parts),'PATH_TRAVERSAL'
+                  meta=z.getinfo(member)
+                  assert not stat.S_ISLNK(meta.external_attr >> 16),'ZIP_SYMLINK'
+                  payload=z.read(member)
+                  if member in manifest: assert hashlib.sha256(payload).hexdigest()==manifest[member],'SOURCE_SHA_FAIL'
+                  dest=pathlib.Path(*path.parts)
+                  dest.parent.mkdir(parents=True,exist_ok=True)
+                  if dest.exists(): assert dest.read_bytes()==payload,'SOURCE_CONFLICT'
+                  else:dest.write_bytes(payload)
+          print('EXTRACT_AND_SHA_PASS',len(names))
+          PYCODE
+      - name: Run 20 scientific negative/positive tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          F3_EVIDENCE_ZIP="$PWD/hcraf_stage1am_f3_evidence_reference.zip" \
+          PYTHONPATH="$PWD" python3 -m unittest discover \
+            -s hcraf_f3_contract/tests -p 'test_*.py' -v \
+            > artifact/f3_contract/python_tests.log 2>&1
+          tail -8 artifact/f3_contract/python_tests.log
+      - name: Reproduce candidate-contract audit with no new simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH="$PWD" python3 -m hcraf_f3_contract.scripts.audit \
+            --evidence hcraf_stage1am_f3_evidence_reference.zip \
+            --output artifact/f3_contract \
+            > artifact/f3_contract/replay.log 2>&1
+          cat artifact/f3_contract/replay.log
+          cat > artifact/f3_contract/EXPECTED_OUTPUT_SHA256.txt <<'EOFHASH'
+          44ef7aa3ab70749740aa7a03cc7dc930a7bcd3e23cf075d8063caeb4719d6dd2  output/contract_summary.json
+          0882e6033b23665e1366ed8c6d570af6b995253656851d20bdbdf8fb810d43fe  output/gate_matrix.json
+          a651241b2f32ba29d13a381d05209c82f88ccd747c020d0fdca5163f23d922bc  output/legacy_pathwide_720.csv
+          ff6d30a9396eba55d1ddcb07a8b24f4541da41f2f7a17865dce34bfeb13c3b1a  output/lp_return_diagnostics_288.csv
+          EOFHASH
+          (cd artifact/f3_contract && sha256sum -c EXPECTED_OUTPUT_SHA256.txt)
+          python3 - <<'PYCODE'
+          import json
+          p='artifact/f3_contract/output/contract_summary.json'
+          x=json.load(open(p))
+          assert x['status']=='NO_GO_F3_CONTRACT_CANDIDATES_NOT_VALIDATED'
+          assert x['GO_FREEZE'] is False and x['F3_ready'] is False and x['training_ready'] is False
+          assert x['FutureCongestion'] is None and x['Congestion'] is None
+          assert x['official_F3_labels']==0 and x['new_ndnsim_runs']==0
+          print('STRICT_NO_GO_CHECK_PASS')
+          PYCODE
+      - name: Preserve independent hash manifest even on failure
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p artifact/f3_contract
+          python3 - <<'PYCODE'
+          import hashlib,json,pathlib
+          base=pathlib.Path('artifact/f3_contract')
+          m={p.relative_to(base).as_posix():hashlib.sha256(p.read_bytes()).hexdigest()
+             for p in base.rglob('*') if p.is_file() and p.name!='MANIFEST_SHA256.json'}
+          (base/'MANIFEST_SHA256.json').write_text(json.dumps(m,indent=2,sort_keys=True)+'\n')
+          print('manifest entries',len(m))
+          PYCODE
+      - name: Upload reproducible NO-GO preflight evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1am-f3-contract-${{ github.run_number }}-${{ github.run_attempt }}
+          path: artifact/f3_contract/
+          if-no-files-found: warn
