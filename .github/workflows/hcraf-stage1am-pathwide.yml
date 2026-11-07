@@ -1,4 +1,4 @@
-name: "HCRAF - Stage 1AM Cross-Face Full-Path Forward-Return Physical Oracle (v0.41.0)"
+name: "HCRAF - Stage 1AM Cross-Face Full-Path Forward-Return Physical Oracle (v0.41.1 producer-JSON fix)"
 on:
   workflow_dispatch:
 permissions:
@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "d3c2393983d24826e314056a332191c3a95d89608248384d8e3e219782581034  hcraf_stage1am_pathwide_sources.zip" | sha256sum -c -
+          echo "bddb7423b5347c2e4a8234d434f1d0964c90cb14ad48ed0b33ccf03a03ad92db  hcraf_stage1am_pathwide_sources.zip" | sha256sum -c -
           echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
           mkdir -p artifact/stage1s episode_output
           cp /tmp/hcraf_1am_apt_update.log episode_output/apt_update.log
@@ -50,10 +50,10 @@ jobs:
                   dst.write_bytes(content)
               print(zname,'entries',len(names))
               return len(names)
-          assert extract('hcraf_stage1am_pathwide_sources.zip',pathlib.Path('.'))==234
+          assert extract('hcraf_stage1am_pathwide_sources.zip',pathlib.Path('.'))==235
           extract('hcraf_stage1s_approved_reference.zip',pathlib.Path('artifact'),prefix='stage1s/')
           PYCODE
-      - name: Run all 492 Python contracts, native C++ decoder tests and shell parser
+      - name: Run all 504 Python contracts, three native C++ tests and shell parser
         shell: bash
         run: |
           set -euo pipefail
@@ -62,7 +62,7 @@ jobs:
               -s hcraf/episode/tests -p 'test_*.py' -q \
               > episode_output/python_tests.log 2>&1
           tail -8 episode_output/python_tests.log
-          for driver in wire_decode_driver lp_stage1w_driver; do
+          for driver in wire_decode_driver lp_stage1w_driver producer_receipt_nonce_driver; do
             g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
               "hcraf/episode/tests/${driver}.cpp" -o "/tmp/${driver}"
             "/tmp/${driver}" > "episode_output/${driver}.log" 2>&1
