@@ -1,0 +1,110 @@
+name: "HCRAF - Stage 1AM F3 Coverage and Fresh-Test Controls (v0.45.0)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  f3_coverage_v045:
+    name: "336 real ndnSIM runs | new E/F topologies | 4 runs per split | NO FREEZE"
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 355
+    steps:
+      - name: Install pinned ndnSIM build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update > /tmp/hcraf_coverage_apt_update.log 2>&1
+          apt-get install -y --no-install-recommends git ca-certificates build-essential \
+            python3 python3-dev python3-setuptools python3-pip python3-pytest \
+            pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+            libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+            libevent-dev graphviz doxygen time > /tmp/hcraf_coverage_apt_install.log 2>&1
+      - name: Checkout private HCRAF repository
+        uses: actions/checkout@v4
+      - name: Verify fixed source hashes and extract safely, no conflicts allowed
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "278fd8ce070bbd5a4788130a3e7232f719847a605a8dcbd80ed3f16c876bedee  hcraf_stage1am_f3_coverage_sources.zip" | sha256sum -c -
+          echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
+          mkdir -p artifact/stage1s episode_output
+          cp /tmp/hcraf_coverage_apt_update.log episode_output/apt_update.log
+          cp /tmp/hcraf_coverage_apt_install.log episode_output/apt_install.log
+          python3 - <<'PYCODE' 2>&1 | tee episode_output/unpack.log
+          import hashlib,json,pathlib,stat,zipfile
+          def unpack(name,dest,prefix=None,expected_members=None):
+              with zipfile.ZipFile(name) as z:
+                  assert z.testzip() is None, 'ZIP_CRC_FAIL'
+                  names=z.namelist()
+                  assert len(names)==len(set(names)), 'DUPLICATE_ZIP_MEMBER'
+                  if expected_members is not None:assert len(names)==expected_members, 'UNEXPECTED_SOURCE_MEMBER_COUNT'
+                  for n in names:
+                      if n.endswith('/') or (prefix and not n.startswith(prefix)):continue
+                      rel=pathlib.PurePosixPath(n)
+                      assert n and not n.startswith('/') and '\\' not in n and '..' not in rel.parts, 'UNSAFE_ZIP_PATH'
+                      assert stat.S_IFMT(z.getinfo(n).external_attr>>16)!=stat.S_IFLNK,'SYMLINK_FORBIDDEN'
+                      out=dest.joinpath(*rel.parts)
+                      out.parent.mkdir(parents=True,exist_ok=True)
+                      data=z.read(n)
+                      if out.exists():assert out.read_bytes()==data, 'CONFLICT_EXISTING_SOURCE:'+str(out)
+                      out.write_bytes(data)
+                  print(name,'total_zip_members',len(names))
+          unpack('hcraf_stage1am_f3_coverage_sources.zip',pathlib.Path('.'),expected_members=273)
+          manifest=json.loads(pathlib.Path('HCRAF_STAGE1AM_V045_SOURCE_SHA256.json').read_text())
+          assert manifest['schema']=='HCRAF_STAGE1AM_V045_SOURCE'
+          assert len(manifest['files'])==272
+          for n,h in manifest['files'].items():
+              assert hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest()==h,'SOURCE_MEMBER_SHA_MISMATCH:'+n
+          unpack('hcraf_stage1s_approved_reference.zip',pathlib.Path('artifact'),prefix='stage1s/')
+          print('SOURCE_CONTENT_SHA_PASSED',len(manifest['files']))
+          PYCODE
+      - name: Run complete Python and native parser tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          HCRAF_STAGE1S_RUN_ROOT="$PWD/artifact/stage1s" PYTHONDONTWRITEBYTECODE=1 \
+            python3 -m unittest discover -s hcraf/episode/tests -p 'test_*.py' -q \
+            > episode_output/python_tests.log 2>&1
+          tail -8 episode_output/python_tests.log
+          for driver in wire_decode_driver lp_stage1w_driver producer_receipt_nonce_driver; do
+            g++ -std=c++11 -Wall -Wextra -pedantic -O2 -I hcraf/episode/src \
+              "hcraf/episode/tests/${driver}.cpp" -o "/tmp/${driver}"
+            "/tmp/${driver}" > "episode_output/${driver}.log" 2>&1
+          done
+          bash -n hcraf/episode/scripts/run_stage1am_f3_coverage.sh
+          bash -n hcraf/episode/scripts/build_stage1am_f3_coverage.sh
+      - name: Build approved NFD/ndnSIM plus new E/F four-hop scratch
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_coverage.sh > episode_output/build.log 2>&1
+          tail -45 episode_output/build.log
+          cmp -s hcraf/episode/src/hcraf-stage1am-f3-coverage-pilot.cpp \
+            episode_sources/ns-3/scratch/hcraf-stage1am-f3-coverage-pilot.cc
+      - name: Run E Validation, seal, then F Test (336 paired simulations)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1am_f3_coverage.sh > episode_output/run.log 2>&1
+          tail -85 episode_output/run.log
+      - name: Always manifest real evidence or failure and retain NO-GO status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          if [ -f hcraf/episode/scripts/manifest_stage1am_f3_coverage.py ];then
+            python3 hcraf/episode/scripts/manifest_stage1am_f3_coverage.py "$PWD"
+          else
+            find episode_output -type f -print0 | sort -z | xargs -0 -r sha256sum \
+              > episode_output/fallback_hashes.txt
+          fi
+      - name: Upload full raw evidence and diagnostics including Failure cases
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-stage1am-f3-coverage-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: warn
