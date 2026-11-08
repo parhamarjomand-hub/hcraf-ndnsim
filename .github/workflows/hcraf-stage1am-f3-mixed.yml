@@ -1,11 +1,11 @@
-name: "HCRAF - Stage 1AM F3 Mixed RNG Load and Within-Arm Classes (v0.47.0)"
+name: "HCRAF - Stage 1AM F3 Mixed RNG Load and Within-Arm Classes (v0.47.1 C++ scenario-version fix)"
 on:
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
   f3_mixed_rng_v047:
-    name: "360 ns-3 runs | mixed positive/negative under load | no Freeze"
+    name: "360 ns-3 runs | fixed C++ schema | no Freeze"
     runs-on: ubuntu-latest
     container: ubuntu:20.04
     timeout-minutes: 355
@@ -27,7 +27,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          echo "af9af2571d9c2668acdda11591e03d9dd0def9bd3d27f16a3d155ba11c822fba  hcraf_stage1am_f3_mixed_sources.zip" | sha256sum -c -
+          echo "f21a132299e88fdee65397b7d846c3fa47bc7ee041dd6a161e7bd48651c925da  hcraf_stage1am_f3_mixed_sources.zip" | sha256sum -c -
           echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
           mkdir -p artifact/stage1s episode_output
           cp /tmp/hcraf_v047_apt_update.log episode_output/apt_update.log
