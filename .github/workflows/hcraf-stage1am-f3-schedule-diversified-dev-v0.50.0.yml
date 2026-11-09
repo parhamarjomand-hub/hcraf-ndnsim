@@ -1,0 +1,195 @@
+name: "HCRAF F3 Schedule Diversified DEV ONLY (v0.50.0)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  f3_schedule_diversified_dev:
+    name: "72 monitored + 24 paired controls | 12 RNG | 2 schedules"
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 355
+    steps:
+      - name: Install pinned ndnSIM dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update > /tmp/hcraf_return_dev_apt_update.log 2>&1
+          apt-get install -y --no-install-recommends git ca-certificates build-essential \
+            python3 python3-dev python3-setuptools python3-pip python3-pytest \
+            pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+            libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+            libevent-dev graphviz doxygen time > /tmp/hcraf_return_dev_apt_install.log 2>&1
+      - name: Checkout private source repository
+        uses: actions/checkout@v4
+      - name: Verify historical source archives without modifying prior evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "f21a132299e88fdee65397b7d846c3fa47bc7ee041dd6a161e7bd48651c925da  hcraf_stage1am_f3_mixed_sources.zip" | sha256sum -c -
+          echo "b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4  hcraf_stage1s_approved_reference.zip" | sha256sum -c -
+          mkdir -p artifact/stage1s episode_output
+          cp /tmp/hcraf_return_dev_apt_update.log episode_output/apt_update.log
+          cp /tmp/hcraf_return_dev_apt_install.log episode_output/apt_install.log
+          python3 - <<'PYCODE' > episode_output/extraction_and_integrity.log 2>&1
+          import hashlib,json,pathlib,stat,zipfile
+          def unpack(name,dest,prefix=None,expected_members=None):
+            with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None,'ZIP_CRC_FAIL'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'DUPLICATE_ZIP_MEMBER'
+              if expected_members is not None:assert len(names)==expected_members,'SOURCE_MEMBER_COUNT'
+              for n in names:
+                if n.endswith('/') or (prefix and not n.startswith(prefix)):continue
+                rel=pathlib.PurePosixPath(n)
+                assert n and not n.startswith('/') and '\\' not in n and '..' not in rel.parts,'UNSAFE_ZIP_PATH'
+                assert stat.S_IFMT(z.getinfo(n).external_attr>>16)!=stat.S_IFLNK,'SYMLINK_FORBIDDEN'
+                out=dest.joinpath(*rel.parts);out.parent.mkdir(parents=True,exist_ok=True)
+                data=z.read(n)
+                if out.exists():assert out.read_bytes()==data,'SOURCE_CONFLICT:'+str(out)
+                out.write_bytes(data)
+                if n.endswith('.sh'):out.chmod(0o755)
+              print('UNPACK_OK',name,len(names))
+          unpack('hcraf_stage1am_f3_mixed_sources.zip',pathlib.Path('.'),expected_members=296)
+          manifest=json.loads(pathlib.Path('HCRAF_STAGE1AM_V047_SOURCE_SHA256.json').read_text())
+          assert manifest['schema']=='HCRAF_STAGE1AM_V047_SOURCE'
+          assert len(manifest['files'])==295
+          for n,h in manifest['files'].items():
+              assert hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest()==h,'SOURCE_HASH_MISMATCH:'+n
+          unpack('hcraf_stage1s_approved_reference.zip',pathlib.Path('artifact'),prefix='stage1s/')
+          print('SOURCE_HASHES_OK',len(manifest['files']))
+          PYCODE
+      - name: Verify and extract new v0.49.0 DEV source ZIP without modifying historical sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "f0e6d332fe8eca47f6e777a3d794a23b518ac909f9ccae2088717260791e4be0  hcraf_stage1am_f3_return_matched_dev_v049_sources.zip" | sha256sum -c -
+          python3 - <<'PYCODE' > episode_output/v049_overlay_integrity.log 2>&1
+          import hashlib,json,pathlib,stat,zipfile
+          archive=pathlib.Path('hcraf_stage1am_f3_return_matched_dev_v049_sources.zip')
+          manifest_name='HCRAF_F3_RETURN_MATCHED_DEV_V049_SOURCE_SHA256.json'
+          workflow_name='.github/workflows/hcraf-stage1am-f3-return-matched-dev-v0.49.0.yml'
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None,'OVERLAY_CRC_FAIL'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'OVERLAY_DUPLICATES'
+              assert manifest_name in names,'MISSING_V049_MANIFEST'
+              manifest=json.loads(z.read(manifest_name))
+              assert manifest['schema']=='HCRAF_F3_RETURN_MATCHED_DEV_V049_SOURCE_SHA256'
+              assert manifest['source_zip_sha256']=='f21a132299e88fdee65397b7d846c3fa47bc7ee041dd6a161e7bd48651c925da'
+              assert set(names)==set(manifest['files'])|{manifest_name},'OVERLAY_MEMBER_MISMATCH'
+              assert pathlib.Path(workflow_name).is_file(),'V049_WORKFLOW_NOT_PRESENT'
+              for name in names:
+                  p=pathlib.PurePosixPath(name)
+                  assert name and not name.startswith('/') and '\\' not in name and '..' not in p.parts,'UNSAFE_OVERLAY_PATH'
+                  assert stat.S_IFMT(z.getinfo(name).external_attr>>16)!=stat.S_IFLNK,'OVERLAY_SYMLINK_FORBIDDEN'
+                  b=z.read(name)
+                  if name!=manifest_name:
+                      assert hashlib.sha256(b).hexdigest()==manifest['files'][name],'OVERLAY_FILE_HASH_MISMATCH:'+name
+                  # Root README is a packaging-only document, not executable source.
+                  # Preserve any existing repository README, without weakening
+                  # fail-closed collision checks for source code or stage files.
+                  if name=='README_FA.md':
+                      doc=pathlib.Path('episode_output/v049_bundled_README_FA.md')
+                      doc.parent.mkdir(parents=True,exist_ok=True)
+                      if doc.exists():assert doc.read_bytes()==b,'BUNDLED_README_CONFLICT'
+                      doc.write_bytes(b)
+                      print('BUNDLED_README_RELOCATED',name,str(doc))
+                      continue
+                  out=pathlib.Path(name)
+                  if out.exists():assert out.read_bytes()==b,'OVERLAY_SOURCE_CONFLICT:'+name
+                  out.parent.mkdir(parents=True,exist_ok=True)
+                  out.write_bytes(b)
+                  if name.endswith('.sh'):out.chmod(0o755)
+              print('V049_OVERLAY_OK',len(names),'SOURCES_SHA256_OK')
+          PYCODE
+      - name: Validate and apply separate v0.50.0 Development ZIP (no historical source edits)
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "fb71f932c2a301f8c095892ac174a75b37142252218bf4db83f126fd2ea07dde  hcraf_stage1am_f3_schedule_diversified_dev_v050_sources.zip" | sha256sum -c -
+          python3 - <<'PYCODE' > episode_output/v050_overlay_integrity.log 2>&1
+          import hashlib,json,pathlib,stat,zipfile
+          archive=pathlib.Path('hcraf_stage1am_f3_schedule_diversified_dev_v050_sources.zip')
+          manifest_name='HCRAF_F3_SCHEDULE_DIVERSIFIED_DEV_V050_SOURCE_SHA256.json'
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None,'V050_ZIP_CRC_FAIL'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'V050_DUPLICATE_MEMBER'
+              assert manifest_name in names,'V050_MANIFEST_MISSING'
+              manifest=json.loads(z.read(manifest_name))
+              assert manifest['schema']=='HCRAF_F3_SCHEDULE_DIVERSIFIED_DEV_V050_SOURCE_SHA256'
+              assert manifest['status']=='DEV_CODE_PREPARED_NOT_RUN'
+              assert manifest['source_zip_sha256']=='f21a132299e88fdee65397b7d846c3fa47bc7ee041dd6a161e7bd48651c925da'
+              assert manifest['parent_v049_source_zip_sha256']=='f0e6d332fe8eca47f6e777a3d794a23b518ac909f9ccae2088717260791e4be0'
+              assert manifest['science']=={'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False}
+              assert set(names)==set(manifest['files'])|{manifest_name},'V050_MANIFEST_MISMATCH'
+              for n in names:
+                  parts=pathlib.PurePosixPath(n)
+                  assert n and not n.startswith('/') and '..' not in parts.parts and '\\' not in n,'V050_UNSAFE_PATH'
+                  assert stat.S_IFMT(z.getinfo(n).external_attr>>16)!=stat.S_IFLNK,'V050_SYMLINK_FORBIDDEN'
+                  data=z.read(n)
+                  if n!=manifest_name:
+                      assert hashlib.sha256(data).hexdigest()==manifest['files'][n],'V050_FILE_HASH_MISMATCH:'+n
+                  target=pathlib.Path(n)
+                  assert not target.exists(),'V050_OVERLAY_COLLISION:'+n
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(data)
+                  if n.endswith('.sh'):target.chmod(0o755)
+              print('V050_OVERLAY_OK',len(names),'NO_HISTORICAL_COLLISIONS')
+          PYCODE
+      - name: Run local contracts and upstream regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          HCRAF_STAGE1S_RUN_ROOT="$PWD/artifact/stage1s" PYTHONDONTWRITEBYTECODE=1 \
+            python3 -m unittest discover -s hcraf/episode/tests -p 'test_*.py' -q \
+            > episode_output/python_tests.log 2>&1
+          tail -12 episode_output/python_tests.log
+          bash -n hcraf/episode/scripts/build_stage1am_f3_schedule_diversified_dev.sh
+          bash -n hcraf/episode/scripts/run_stage1am_f3_schedule_diversified_dev.sh
+          python3 -m py_compile hcraf/episode/scripts/verify_stage1am_f3_schedule_diversified_dev.py
+      - name: Compile NEW standalone v0.50.0 Development C++ executable
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_schedule_diversified_dev.sh \
+            > episode_output/dev_build.log 2>&1
+          tail -30 episode_output/dev_build.log
+          cmp -s hcraf/episode/src/hcraf-stage1am-f3-schedule-diversified-dev.cpp \
+            episode_sources/ns-3/scratch/hcraf-stage1am-f3-schedule-diversified-dev.cc
+      - name: Execute only NEW DEV_CHAIN_L schedule-diversified matrix and fail closed
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/run_stage1am_f3_schedule_diversified_dev.sh \
+            > episode_output/dev_run.log 2>&1
+          tail -25 episode_output/dev_run.log
+          cat episode_output/stage1am_f3_schedule_diversified_report/summary.json
+      - name: Always manifest evidence including failed steps
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output
+          python3 - <<'PYCODE'
+          import hashlib,json,pathlib
+          root=pathlib.Path('episode_output')
+          files={}
+          for p in sorted(root.rglob('*')):
+              if p.is_file() and p.name!='dev_evidence_sha256.json':
+                  files[p.relative_to(root).as_posix()]=hashlib.sha256(p.read_bytes()).hexdigest()
+          (root/'dev_evidence_sha256.json').write_text(json.dumps({'stage':'1AM-F3-SCHEDULE-DIVERSIFIED-DEV-PILOT',
+             'scientific_f3_status':'NO_GO_F3_CONSTRUCT_AND_PREDICTABILITY_NOT_VALIDATED',
+             'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+             'GO_FREEZE':False,'training_ready':False,'files':files},indent=2))
+          print('MANIFESTED_FILES',len(files))
+          PYCODE
+      - name: Always upload isolated NEW v0.50.0 evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-schedule-diversified-dev-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/
+          if-no-files-found: warn
