@@ -1,0 +1,95 @@
+name: HCRAF F3 Phase Randomized Prereg LOCK ONLY (v0.50.3)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lock-prereg-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout committed prereg package (no simulator execution)
+        uses: actions/checkout@v4
+      - name: Verify frozen prereg ZIP and extract without historical overwrite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/prereg_v0503
+          echo "0bd0e1ba404b4ad34dec74139405988bdef13b7f555ef4826f2f4a92edf52a55  hcraf_stage1am_f3_phase_randomized_prereg_v0503_sources.zip" | sha256sum -c -
+          python3 - <<'PYCODE' > episode_output/prereg_v0503/extraction.log 2>&1
+          import hashlib, json, pathlib, stat, zipfile
+          filename='hcraf_stage1am_f3_phase_randomized_prereg_v0503_sources.zip'
+          manifest_name='HCRAF_F3_PHASE_RANDOMIZED_PREREG_V0503_SOURCE_SHA256.json'
+          root=pathlib.Path('.').resolve()
+          with zipfile.ZipFile(filename) as z:
+              assert z.testzip() is None,'ZIP_CRC_FAILURE'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'DUPLICATE_MEMBERS'
+              assert manifest_name in names,'SOURCE_MANIFEST_MISSING'
+              manifest=json.loads(z.read(manifest_name))
+              assert manifest['schema']=='HCRAF_F3_PHASE_RANDOMIZED_PREREG_V0503_SOURCE_SHA256','MANIFEST_SCHEMA'
+              assert manifest['status']=='PREEXECUTION_CONTRACT_READY_NOT_GIT_COMMITTED_YET','MANIFEST_STAGE'
+              assert manifest['science']=={'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False},'SCIENCE_LOCKS'
+              assert set(names)==set(manifest['files'])|{manifest_name},'SOURCE_MEMBERS_MISMATCH'
+              for name in names:
+                  parts=pathlib.PurePosixPath(name)
+                  assert name and not name.startswith('/') and '..' not in parts.parts and '\\' not in name,'UNSAFE_ZIP_PATH'
+                  assert stat.S_IFMT(z.getinfo(name).external_attr>>16)!=stat.S_IFLNK,'ZIP_SYMLINK_FORBIDDEN'
+                  if name==manifest_name:
+                      continue
+                  assert name.startswith('hcraf/episode/docs/1AM/F3_PHASE_RANDOMIZED_PREREG_v0.50.3/'),'UNEXPECTED_SOURCE_PATH'
+                  data=z.read(name)
+                  assert hashlib.sha256(data).hexdigest()==manifest['files'][name],'FILE_HASH_MISMATCH:'+name
+                  target=root.joinpath(*parts.parts)
+                  assert target.resolve().is_relative_to(root),'PATH_OUTSIDE_REPO'
+                  if target.exists():
+                      assert target.read_bytes()==data,'PREREG_SOURCE_COLLISION:'+name
+                  else:
+                      target.parent.mkdir(parents=True,exist_ok=True)
+                      target.write_bytes(data)
+              print('PREREG_SOURCE_HASH_CHECKED',len(manifest['files']))
+          PYCODE
+      - name: Verify schedule index, 168-run matrix, all science locks and 18 unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          root="hcraf/episode/docs/1AM/F3_PHASE_RANDOMIZED_PREREG_v0.50.3"
+          echo "0876a002ec47bfac79efe0fe3c4b0598de729004e42252fcecf2b68ae97ce7a4  $root/PREREG_PROTOCOL_FA.md" | sha256sum -c -
+          echo "9f83c712fd66f38906915934849a0d35a370b614b1cc18c3be5bc38eca3d3902  $root/SCHEDULE_INDEX_LOCKED_48.csv" | sha256sum -c -
+          echo "b827a744d8f56f8f122cf683f7137fa8444b72e033ffa24e8a07e2f43a23943a  $root/RUN_MATRIX_LOCKED_168.csv" | sha256sum -c -
+          python3 "$root/generate_phase_prereg.py" --verify "$root" > episode_output/prereg_v0503/generator_verification.json
+          python3 "$root/verify_prereg.py" "$root" --output episode_output/prereg_v0503/contract_verification.json > episode_output/prereg_v0503/validation.log
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$root/tests" -p 'test_*.py' -v > episode_output/prereg_v0503/unit_tests.log 2>&1
+          tail -8 episode_output/prereg_v0503/unit_tests.log
+      - name: Record Git commit and immutable contract checksums for the next experiment
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib,json,os,pathlib,subprocess
+          d=pathlib.Path('episode_output/prereg_v0503')
+          fields={
+            'status':'PASS_PREREG_CONTRACT_ONLY_NO_NDNSIM_RUN',
+            'git_commit_sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            'github_run_id':os.environ.get('GITHUB_RUN_ID'),
+            'github_run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+            'source_zip_sha256':'0bd0e1ba404b4ad34dec74139405988bdef13b7f555ef4826f2f4a92edf52a55',
+            'protocol_sha256':'0876a002ec47bfac79efe0fe3c4b0598de729004e42252fcecf2b68ae97ce7a4',
+            'schedule_index_sha256':'9f83c712fd66f38906915934849a0d35a370b614b1cc18c3be5bc38eca3d3902',
+            'run_matrix_sha256':'b827a744d8f56f8f122cf683f7137fa8444b72e033ffa24e8a07e2f43a23943a',
+            'Congestion':None,'FutureCongestion':None,
+            'F3_ready':False,'GO_FREEZE':False,'training_ready':False,
+          }
+          (d/'prereg_lock_receipt.json').write_text(json.dumps(fields,indent=2)+'\n')
+          print(json.dumps(fields,indent=2))
+          PYCODE
+      - name: Always upload prereg validation evidence (never scientific outcome)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-phase-prereg-v0503-${{ github.run_number }}-${{ github.run_attempt }}
+          path: episode_output/prereg_v0503/
+          if-no-files-found: warn
