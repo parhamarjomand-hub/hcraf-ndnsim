@@ -87,6 +87,16 @@ jobs:
                   b=z.read(name)
                   if name!=manifest_name:
                       assert hashlib.sha256(b).hexdigest()==manifest['files'][name],'OVERLAY_FILE_HASH_MISMATCH:'+name
+                  # Root README is a packaging-only document, not executable source.
+                  # Preserve any existing repository README, without weakening
+                  # fail-closed collision checks for source code or stage files.
+                  if name=='README_FA.md':
+                      doc=pathlib.Path('episode_output/v049_bundled_README_FA.md')
+                      doc.parent.mkdir(parents=True,exist_ok=True)
+                      if doc.exists():assert doc.read_bytes()==b,'BUNDLED_README_CONFLICT'
+                      doc.write_bytes(b)
+                      print('BUNDLED_README_RELOCATED',name,str(doc))
+                      continue
                   out=pathlib.Path(name)
                   if out.exists():assert out.read_bytes()==b,'OVERLAY_SOURCE_CONFLICT:'+name
                   out.parent.mkdir(parents=True,exist_ok=True)
