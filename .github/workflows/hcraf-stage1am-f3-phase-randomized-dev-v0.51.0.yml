@@ -146,11 +146,61 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p episode_output/v051_preflight
-          test "$(git rev-parse HEAD)" != "da596ff593f90e8c53a8ff0422cb9811c6a994d6"
-          git merge-base --is-ancestor da596ff593f90e8c53a8ff0422cb9811c6a994d6 HEAD
-          git cat-file -e da596ff593f90e8c53a8ff0422cb9811c6a994d6:hcraf_stage1am_f3_phase_randomized_prereg_v0503_sources.zip
-          git show da596ff593f90e8c53a8ff0422cb9811c6a994d6:hcraf_stage1am_f3_phase_randomized_prereg_v0503_sources.zip | sha256sum | grep -q "^0bd0e1ba404b4ad34dec74139405988bdef13b7f555ef4826f2f4a92edf52a55 "
-          echo "0bd0e1ba404b4ad34dec74139405988bdef13b7f555ef4826f2f4a92edf52a55  hcraf_stage1am_f3_phase_randomized_prereg_v0503_sources.zip" | sha256sum -c -
+          python3 - <<'PYLINEAGE' > episode_output/v051_preflight/lineage_diagnostics.log 2>&1
+          import hashlib, json, os, pathlib, subprocess, sys
+          lock_commit = "da596ff593f90e8c53a8ff0422cb9811c6a994d6"
+          source_name = "hcraf_stage1am_f3_phase_randomized_prereg_v0503_sources.zip"
+          expected_sha256 = "0bd0e1ba404b4ad34dec74139405988bdef13b7f555ef4826f2f4a92edf52a55"
+          report = {"stage":"V051_PREREG_GIT_LINEAGE", "status":"FAIL_CLOSED", "expected_prereg_commit":lock_commit,
+                    "expected_prereg_zip_sha256":expected_sha256, "github_sha":os.getenv("GITHUB_SHA"),
+                    "github_ref":os.getenv("GITHUB_REF"), "checks":{}, "failed_checks":[]}
+          
+          def cmd(name, *parts):
+              p = subprocess.run(parts, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+              result = {"returncode":p.returncode}
+              if p.stderr:
+                  result["stderr"] = p.stderr.decode("utf-8", "replace")[-1400:]
+              report["checks"][name] = result
+              if p.returncode != 0:
+                  report["failed_checks"].append(name)
+              return p
+          
+          pathlib.Path("episode_output/v051_preflight").mkdir(parents=True, exist_ok=True)
+          # In GitHub container builds, checkout can be owned by a different uid.
+          # Mark ONLY the checked-out repository as safe, never wildcard all repositories.
+          repo_dir = pathlib.Path.cwd().resolve()
+          safe = cmd("mark_checked_out_workspace_safe", "git", "config", "--global", "--add", "safe.directory", str(repo_dir))
+          head = cmd("read_checkout_commit", "git", "rev-parse", "HEAD")
+          current_sha = head.stdout.decode("utf-8", "replace").strip() if head.returncode == 0 else None
+          report["current_commit"] = current_sha
+          if current_sha == lock_commit:
+              report["failed_checks"].append("execution_must_follow_distinct_prereg_commit")
+          if current_sha:
+              cmd("prereg_commit_is_ancestor", "git", "merge-base", "--is-ancestor", lock_commit, current_sha)
+              cmd("prereg_zip_exists_at_locked_commit", "git", "cat-file", "-e", lock_commit + ":" + source_name)
+              historical = cmd("read_prereg_zip_at_locked_commit", "git", "show", lock_commit + ":" + source_name)
+              if historical.returncode == 0:
+                  historical_hash=hashlib.sha256(historical.stdout).hexdigest()
+                  report["locked_commit_zip_sha256"]=historical_hash
+                  if historical_hash!=expected_sha256:
+                      report["failed_checks"].append("locked_commit_prereg_zip_hash_mismatch")
+          working=pathlib.Path(source_name)
+          report["checkout_prereg_zip_present"] = working.is_file()
+          if working.is_file():
+              checkout_hash = hashlib.sha256(working.read_bytes()).hexdigest()
+              report["checkout_prereg_zip_sha256"] = checkout_hash
+              if checkout_hash != expected_sha256:
+                  report["failed_checks"].append("working_tree_prereg_zip_hash_mismatch")
+          else:
+              report["failed_checks"].append("working_tree_prereg_zip_missing")
+          report["status"]="PASS_PREREG_COMMIT_ANCESTRY_AND_BYTES" if not report["failed_checks"] else "FAIL_CLOSED_PREREG_LINEAGE"
+          destination=pathlib.Path("episode_output/v051_preflight/lineage_diagnostics.json")
+          destination.write_text(json.dumps(report,indent=2,ensure_ascii=False)+"\n",encoding="utf-8")
+          print("V051_PREREG_LINEAGE",report["status"],"head=",current_sha,"failed_checks=",report["failed_checks"],flush=True)
+          if report["failed_checks"]:
+              sys.exit(1)
+          PYLINEAGE
+          cat episode_output/v051_preflight/lineage_diagnostics.log
           python3 - <<'PYCODE' > episode_output/v051_preflight/prereg_overlay.log 2>&1
           import hashlib,json,pathlib,stat,zipfile
           name='hcraf_stage1am_f3_phase_randomized_prereg_v0503_sources.zip'
