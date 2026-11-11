@@ -1,0 +1,106 @@
+name: HCRAF F3 Pathwide Independent Witness Prereg LOCK ONLY (v0.51.4)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lock-pathwide-witness-prereg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout committed contract (NO ndnSIM)
+        uses: actions/checkout@v4
+      - name: Verify source ZIP and safe-stage documents without changing repository files
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/prereg_v0514
+          echo "1b7ecd6bed08e3e2b965f5d04663acbeaf893950bdd56d2b084d12f50ead9304  hcraf_stage1am_f3_pathwide_witness_prereg_v0514_sources.zip" | sha256sum -c -
+          python3 - <<'PYSAFE' > episode_output/prereg_v0514/extraction.log 2>&1
+          import hashlib,json,pathlib,stat,zipfile
+          archive='hcraf_stage1am_f3_pathwide_witness_prereg_v0514_sources.zip'
+          expected_sha='1b7ecd6bed08e3e2b965f5d04663acbeaf893950bdd56d2b084d12f50ead9304'
+          manifest_name='HCRAF_F3_PATHWIDE_WITNESS_PREREG_V0514_SOURCE_SHA256.json'
+          staged=pathlib.Path('episode_output/prereg_v0514/staged').resolve()
+          staged.mkdir(parents=True,exist_ok=True)
+          with zipfile.ZipFile(archive) as z:
+              assert z.testzip() is None,'SOURCE_ZIP_CRC_ERROR'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'DUPLICATE_ZIP_MEMBER'
+              assert manifest_name in names,'SOURCE_MANIFEST_MISSING'
+              manifest=json.loads(z.read(manifest_name))
+              assert manifest['schema']=='HCRAF_F3_PATHWIDE_WITNESS_PREREG_V0514_SOURCE_SHA256','SOURCE_MANIFEST_SCHEMA'
+              assert manifest['status']=='LOCK_ONLY_UNCOMMITTED_BUNDLE_NO_NDNSIM_RUN','SOURCE_MANIFEST_STATE'
+              assert manifest['science']=={'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False},'SCIENCE_LOCKS'
+              assert set(names)==set(manifest['files'])|{manifest_name},'ZIP_MEMBERS_MISMATCH'
+              for name in names:
+                  pp=pathlib.PurePosixPath(name)
+                  assert name and not name.startswith('/') and '..' not in pp.parts and '\\' not in name,'UNSAFE_PATH'
+                  info=z.getinfo(name)
+                  assert not stat.S_ISLNK(info.external_attr>>16),'SYMLINK_NOT_ALLOWED'
+                  if name==manifest_name:continue
+                  assert name.startswith('hcraf/episode/docs/1AM/F3_PATHWIDE_WITNESS_PREREG_v0.51.4/'),'UNEXPECTED_SOURCE_PATH'
+                  contents=z.read(name)
+                  assert hashlib.sha256(contents).hexdigest()==manifest['files'][name],'SOURCE_FILE_SHA_MISMATCH:'+name
+                  target=staged.joinpath(*pp.parts)
+                  assert target.resolve().is_relative_to(staged),'PATH_ESCAPE'
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  assert not target.exists(),'STAGE_COLLISION:'+name
+                  target.write_bytes(contents)
+              print('SOURCE_VERIFIED',len(manifest['files']))
+          PYSAFE
+      - name: Verify topology inventory, science locks and local tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          dir='episode_output/prereg_v0514/staged/hcraf/episode/docs/1AM/F3_PATHWIDE_WITNESS_PREREG_v0.51.4'
+          echo '5d79cb185f9597f35892e52d1195c5b022746160f4d5e1c6096480a8e3e9fb42  '$dir'/PREREG_PROTOCOL_FA.md' | sha256sum -c -
+          echo '5ee6fa097b0382a0f4c693a7f1e94a8af2834fef06de253972d8a735f0e82d77  '$dir'/CONTRACT_LOCKED.json' | sha256sum -c -
+          python3 "$dir/verify_prereg.py" "$dir" --output episode_output/prereg_v0514/contract_verification.json > episode_output/prereg_v0514/verification.log
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$dir/tests" -p 'test_*.py' -v > episode_output/prereg_v0514/unit_tests.log 2>&1
+          tail -8 episode_output/prereg_v0514/unit_tests.log
+      - name: Record immutable Git receipt, zero simulations and science gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRECEIPT'
+          import hashlib,json,os,pathlib,subprocess
+          out=pathlib.Path('episode_output/prereg_v0514')
+          receipt={
+              'status':'PASS_PATHWIDE_WITNESS_CONTRACT_LOCK_ONLY_NO_NDNSIM_RUN',
+              'stage':'1AM-F3-PATHWIDE-INDEPENDENT-WITNESS-PREREG',
+              'github_run_id':os.environ.get('GITHUB_RUN_ID'),
+              'github_run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+              'git_commit_sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+              'source_zip_sha256':'1b7ecd6bed08e3e2b965f5d04663acbeaf893950bdd56d2b084d12f50ead9304',
+              'protocol_sha256':'5d79cb185f9597f35892e52d1195c5b022746160f4d5e1c6096480a8e3e9fb42',
+              'contract_sha256':'5ee6fa097b0382a0f4c693a7f1e94a8af2834fef06de253972d8a735f0e82d77',
+              'path_map_sha256':'9a08cb54da3d4d47f08e09a48d88fe16ec259aa8a8cb13620d8fdb4dce9cfa27',
+              'historical_artifact_sha256':'591556124a4eeae0987e623e7aedf7f84334b6e0521ede26848abee58745b43a',
+              'monitored_historical_runs_checked':144,
+              'path_device_records_checked':1152,
+              'simulations_executed':0,
+              'Cplusplus_compiled':False,
+              'observer_new_physical_witness_executed':False,
+              'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+              'GO_FREEZE':False,'training_ready':False,
+              'next_stage_requires_separate_locked_experiment_matrix':True
+          }
+          (out/'prereg_lock_receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n',encoding='utf-8')
+          print(json.dumps(receipt,indent=2,sort_keys=True))
+          PYRECEIPT
+      - name: Always upload contract validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-pathwide-witness-prereg-v0514-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            episode_output/prereg_v0514/extraction.log
+            episode_output/prereg_v0514/verification.log
+            episode_output/prereg_v0514/unit_tests.log
+            episode_output/prereg_v0514/contract_verification.json
+            episode_output/prereg_v0514/prereg_lock_receipt.json
+          if-no-files-found: warn
