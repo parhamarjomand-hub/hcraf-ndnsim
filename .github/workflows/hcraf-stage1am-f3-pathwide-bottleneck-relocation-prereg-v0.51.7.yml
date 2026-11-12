@@ -1,0 +1,169 @@
+name: "HCRAF F3 Pathwide Bottleneck Relocation Prereg LOCK ONLY (v0.51.7)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  pathwide-bottleneck-prereg-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout complete Git ancestry
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Initialize diagnostics AFTER checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0517_prereg
+          printf 'STARTED_NOT_YET_LOCKED: no ndnSIM simulation authorized\n' > episode_output/v0517_prereg/STATUS.txt
+          printf 'Commit: %s\nRun ID: %s\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > episode_output/v0517_prereg/RUN_CONTEXT.txt
+
+      - name: Verify parent evidence and source ZIP are immutable and committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          git merge-base --is-ancestor 11c9037dc63ac402bebf22dcd1a75e60e5c71cc8 HEAD
+          echo "bfbd90c638692ba241a161eaf5dcadfbc7dceae82ba4d5f236e863b2d849b28f  hcraf_stage1am_f3_pathwide_witness_dev_v0515_sources.zip" | sha256sum -c -
+          echo "76a1a0e184f471a7fb3d78b8a44213e0d47a852fa45311b74e73795a1a557a05  hcraf_stage1am_f3_bottleneck_relocation_prereg_v0517_sources.zip" | sha256sum -c -
+          python3 - <<'PYGIT'
+          import hashlib,subprocess
+          for name,sha in (
+              ('hcraf_stage1am_f3_pathwide_witness_dev_v0515_sources.zip','bfbd90c638692ba241a161eaf5dcadfbc7dceae82ba4d5f236e863b2d849b28f'),
+              ('hcraf_stage1am_f3_bottleneck_relocation_prereg_v0517_sources.zip','76a1a0e184f471a7fb3d78b8a44213e0d47a852fa45311b74e73795a1a557a05')):
+            data=subprocess.check_output(['git','show','HEAD:'+name])
+            assert hashlib.sha256(data).hexdigest()==sha,'CURRENT_COMMIT_SOURCE_HASH_CHANGED:'+name
+          print('PASS_COMMITTED_PARENT_AND_NEW_SOURCE_HASHES')
+          PYGIT
+
+      - name: Extract only new v0.51.7 sources with manifest validation and no overwrite
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEXTRACT'
+          import hashlib,json,pathlib,stat,zipfile
+          source=pathlib.Path('hcraf_stage1am_f3_bottleneck_relocation_prereg_v0517_sources.zip')
+          dst=pathlib.Path('episode_output/v0517_prereg/staged')
+          marker='HCRAF_F3_BOTTLENECK_RELOCATION_PREREG_V0517_SOURCE_SHA256.json'
+          with zipfile.ZipFile(source) as z:
+            assert z.testzip() is None,'SOURCE_ZIP_CRC_ERROR'
+            names=z.namelist()
+            assert len(names)==len(set(names)),'DUPLICATE_MEMBER'
+            assert marker in names,'MISSING_MANIFEST'
+            m=json.loads(z.read(marker))
+            assert m['schema']=='HCRAF_F3_BOTTLENECK_RELOCATION_PREREG_V0517_SOURCE_SHA256'
+            assert m['status']=='LOCK_CONTRACT_ONLY_NO_NDNSIM_RUN'
+            assert m['science']=={'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False}
+            assert m['planned_runs']==216 and m['simulations_executed']==0
+            assert set(names)==set(m['files'])|{marker},'MANIFEST_MEMBER_SET_MISMATCH'
+            for n in names:
+              p=pathlib.PurePosixPath(n); i=z.getinfo(n)
+              assert n and not n.startswith('/') and '\\' not in n and '..' not in p.parts,'UNSAFE_PATH:'+n
+              assert not stat.S_ISLNK(i.external_attr >> 16),'SYMLINK_MEMBER:'+n
+              blob=z.read(n)
+              if n!=marker: assert hashlib.sha256(blob).hexdigest()==m['files'][n],'BAD_MEMBER_SHA:'+n
+              target=dst.joinpath(*p.parts)
+              assert not target.exists(),'DUPLICATE_EXTRACT_TARGET:'+n
+              target.parent.mkdir(parents=True,exist_ok=True)
+              target.write_bytes(blob)
+          print('PASS_NEW_SOURCE_SAFE_EXTRACTION',len(names))
+          PYEXTRACT
+
+      - name: Verify prereg design, independent topology mapping and 17 unit tests (NO ndnSIM)
+        shell: bash
+        run: |
+          set -euo pipefail
+          root='episode_output/v0517_prereg/staged/hcraf/episode/docs/1AM/F3_PATHWIDE_BOTTLENECK_RELOCATION_PREREG_v0.51.7'
+          echo "6c66dfefce2abcc73e8c07fdb0afa7ef892524e74b8eb2a004a4181942180649  $root/RUN_MATRIX_LOCKED_216.csv" | sha256sum -c -
+          echo "5a18d45130e2d1fd9c279e02f20c22c83fa7f542243b9e153c479d1429f88fc8  $root/SCIENTIFIC_PROTOCOL_FA.md" | sha256sum -c -
+          echo "b5a7045716ebfdc6afebbb25b13502a7f5b05f14ede45bf1b1601f7c0f6d4f5b  $root/INTERVENTION_SITES_LOCKED_12.csv" | sha256sum -c -
+          python3 "$root/generate_prereg.py" --verify "$root" > episode_output/v0517_prereg/prereg_verify.json
+          python3 "$root/verify_against_parent.py" --root "$root" --source-zip hcraf_stage1am_f3_pathwide_witness_dev_v0515_sources.zip > episode_output/v0517_prereg/parent_path_verification.json
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s episode_output/v0517_prereg/staged/hcraf/episode/tests \
+            -p 'test_stage1am_f3_bottleneck_relocation_prereg_v0517.py' -v \
+            > episode_output/v0517_prereg/unit_tests.log 2>&1 || {
+              tail -n 100 episode_output/v0517_prereg/unit_tests.log
+              exit 1
+            }
+          tail -n 6 episode_output/v0517_prereg/unit_tests.log
+          echo "PASS_LOCAL_DESIGN_VERIFICATION_NOT_SIMULATION" > episode_output/v0517_prereg/STATUS.txt
+
+      - name: Create verifiable Git-anchored matrix and protocol lock receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRECEIPT'
+          import json,os,pathlib,subprocess
+          out=pathlib.Path('episode_output/v0517_prereg')
+          root=out/'staged/hcraf/episode/docs/1AM/F3_PATHWIDE_BOTTLENECK_RELOCATION_PREREG_v0.51.7'
+          design=json.loads((out/'prereg_verify.json').read_text())
+          parent=json.loads((out/'parent_path_verification.json').read_text())
+          assert design['status']=='PASS_LOCKED_DESIGN_VERIFIED_NO_NDNSIM_RUN'
+          assert design['monitored_runs']==192 and design['unmonitored_pairs']==24 and design['total_runs']==216
+          assert parent['status']=='PASS_MATCHED_TO_REAL_V0515_PATH_MAP'
+          science=json.loads((root/'SCIENCE_LOCKS.json').read_text())
+          assert all(science[k] is None for k in ('Congestion','FutureCongestion'))
+          assert all(science[k] is False for k in ('F3_ready','GO_FREEZE','training_ready'))
+          assert science['simulations_executed']==0
+          commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert commit==os.environ['GITHUB_SHA'],'SHA_NOT_CURRENT_CHECKOUT'
+          receipt={'status':'PASS_PATHWIDE_BOTTLENECK_RELOCATION_PREREG_LOCK_ONLY_NO_NDNSIM_RUN',
+             'stage':'1AM-F3-PATHWIDE-BOTTLENECK-RELOCATION-PREREG',
+             'github_run_id':os.environ['GITHUB_RUN_ID'],'github_run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+             'git_commit_sha':commit,'parent_executor_commit':'11c9037dc63ac402bebf22dcd1a75e60e5c71cc8',
+             'parent_executor_run_id':'43210264307',
+             'source_zip_sha256':'76a1a0e184f471a7fb3d78b8a44213e0d47a852fa45311b74e73795a1a557a05',
+             'matrix_sha256':'6c66dfefce2abcc73e8c07fdb0afa7ef892524e74b8eb2a004a4181942180649','protocol_sha256':'5a18d45130e2d1fd9c279e02f20c22c83fa7f542243b9e153c479d1429f88fc8',
+             'site_mapping_sha256':'b5a7045716ebfdc6afebbb25b13502a7f5b05f14ede45bf1b1601f7c0f6d4f5b',
+             'planned_runs':216,'monitored_runs':192,'unmonitored_runs':24,'rng_blocks':12,
+             'simulations_executed':0,'cpp_compiled':False,
+             'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False}
+          (out/'prereg_lock_receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          (out/'STATUS.txt').write_text('PASS_LOCK_RECEIPT_CREATED_NO_NDNSIM_EXECUTION\n')
+          print('PASS_V0517_GIT_ANCHORED_PREREG_LOCK',receipt['github_run_id'])
+          PYRECEIPT
+
+      - name: Ensure status file and diagnostics always exist after checkout
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0517_prereg
+          if test ! -f episode_output/v0517_prereg/STATUS.txt; then
+            echo 'FAILED_NO_VALID_PREREG_RECEIPT' > episode_output/v0517_prereg/STATUS.txt
+          fi
+          printf 'run_id=%s\ncommit=%s\nreceipt_exists=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(test -s episode_output/v0517_prereg/prereg_lock_receipt.json && echo yes || echo no)" \
+             > episode_output/v0517_prereg/UPLOAD_DIAGNOSTIC.txt
+
+      - name: Upload Git prereg receipt or diagnostics (NO simulation artifacts)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-bottleneck-relocation-prereg-v0517
+          path: episode_output/v0517_prereg/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Show lock status and next action
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## HCRAF F3 v0.51.7 — Preregistration only'
+            echo "- This Run ID: $GITHUB_RUN_ID"
+            echo '- Artifact name: `hcraf-f3-bottleneck-relocation-prereg-v0517`'
+            if test -s episode_output/v0517_prereg/prereg_lock_receipt.json; then
+              echo '- Receipt generated; **only a successful GitHub run** confirms a valid lock.'
+            else
+              echo '- Receipt missing; this run is NOT an authorized preregistration. Inspect STATUS.txt and step logs.'
+            fi
+            echo '- No ndnSIM run, no F3 labels, no 1AO or NSGA-III.'
+          } >> "$GITHUB_STEP_SUMMARY"
