@@ -19,12 +19,14 @@ jobs:
     timeout-minutes: 355
     steps:
       - name: Initialize guaranteed executor failure diagnostics
+        id: bootstrap
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p episode_output/v0515_preflight
           printf 'Status: EXECUTOR_STARTED_NOT_AUTHORIZED. Verify MATRIX LOCK artifact before simulations.\n' > episode_output/v0515_preflight/START_HERE_ON_FAILURE.txt
       - name: Install pinned ndnSIM runtime and source verification dependencies
+        id: deps
         shell: bash
         run: |
           set -euo pipefail
@@ -36,10 +38,19 @@ jobs:
             libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
             libevent-dev graphviz doxygen time > /tmp/v0515_apt_install.log 2>&1
       - name: Checkout pinned repository with Git ancestry
+        id: checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Restore diagnostic directory AFTER checkout
+        id: postcheckout
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0515_preflight
+          printf 'CHECKOUT_COMPLETED; preflight paths initialized after actions/checkout.\n' > episode_output/v0515_preflight/POST_CHECKOUT_STATUS.txt
       - name: Confirm Matrix LOCK run and exact artifact exist (fail clearly if absent)
+        id: artifactguard
         shell: bash
         env:
           LOCK_RUN_ID: ${{ inputs.lock_run_id }}
@@ -93,6 +104,7 @@ jobs:
             raise SystemExit(1)
           PYARTIFACT
       - name: Download matrix lock receipt from prior successful GitHub run
+        id: download
         uses: actions/download-artifact@v4
         with:
           name: hcraf-f3-pathwide-witness-matrix-lock-v0515
@@ -100,6 +112,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           path: episode_output/v0515_preflight/lock_artifact
       - name: Verify authentic GitHub lock run, ancestry and immutable bytes
+        id: lockverify
         shell: bash
         env:
           LOCK_RUN_ID: ${{ inputs.lock_run_id }}
@@ -145,6 +158,7 @@ jobs:
           PYLINEAGE
           cat episode_output/v0515_preflight/lineage_check.log
       - name: Restore prior approved base and new DEV sources without overwriting historical files
+        id: extract
         shell: bash
         run: |
           set -euo pipefail
@@ -186,6 +200,7 @@ jobs:
              'HCRAF_F3_PATHWIDE_WITNESS_DEV_V0515_SOURCE_SHA256.json',False)
           PYEXTRACT
       - name: Validate immutable 84-run matrix, source locks and local tests
+        id: tests
         shell: bash
         run: |
           set -euo pipefail
@@ -250,17 +265,79 @@ jobs:
           cat episode_output/v0515_preflight/historical_regression_coverage.json | head -24
           python3 hcraf/episode/scripts/run_stage1am_f3_pathwide_witness_dev.py --preflight-only > episode_output/v0515_preflight/matrix_preflight.json
       - name: Compile separate C++ witness B and scenario
+        id: build
         shell: bash
         run: |
           set -euo pipefail
           bash hcraf/episode/scripts/build_stage1am_f3_pathwide_witness_dev.sh > episode_output/v0515_preflight/cpp_build.log 2>&1
           tail -30 episode_output/v0515_preflight/cpp_build.log
       - name: Run 84 new pre-registered DEV simulations (NO historical workflow rerun)
+        id: simulate
         shell: bash
         run: |
           set -euo pipefail
           python3 hcraf/episode/scripts/run_stage1am_f3_pathwide_witness_dev.py > episode_output/v0515_preflight/simulation_and_audit.log 2>&1
           tail -20 episode_output/v0515_preflight/simulation_and_audit.log
+      - name: Persist failure diagnostics even if any previous step failed
+        id: finaldiagnostics
+        if: always()
+        shell: bash
+        env:
+          V0515_STEP_BOOTSTRAP: ${{ steps.bootstrap.outcome }}
+          V0515_STEP_DEPS: ${{ steps.deps.outcome }}
+          V0515_STEP_CHECKOUT: ${{ steps.checkout.outcome }}
+          V0515_STEP_POSTCHECKOUT: ${{ steps.postcheckout.outcome }}
+          V0515_STEP_LOCK_DISCOVERY: ${{ steps.artifactguard.outcome }}
+          V0515_STEP_LOCK_DOWNLOAD: ${{ steps.download.outcome }}
+          V0515_STEP_LOCK_VERIFY: ${{ steps.lockverify.outcome }}
+          V0515_STEP_EXTRACT: ${{ steps.extract.outcome }}
+          V0515_STEP_TESTS: ${{ steps.tests.outcome }}
+          V0515_STEP_BUILD: ${{ steps.build.outcome }}
+          V0515_STEP_SIMULATE: ${{ steps.simulate.outcome }}
+        run: |
+          # Never mask an upstream failure: this step only writes a best-effort record.
+          # No secrets or tokens are printed. Does not call ndnSIM or edit the locked matrix.
+          set -uo pipefail
+          diag='episode_output/v0515_preflight'
+          mkdir -p "$diag" || exit 1
+          {
+            printf '%s\n' 'HCRAF v0.51.5 DEV Executor — mandatory diagnostic summary'
+            printf 'github_run_id=%s\n' "${GITHUB_RUN_ID:-unavailable}"
+            printf 'github_run_attempt=%s\n' "${GITHUB_RUN_ATTEMPT:-unavailable}"
+            printf 'github_sha=%s\n' "${GITHUB_SHA:-unavailable}"
+            printf 'bootstrap=%s\n' "${V0515_STEP_BOOTSTRAP:-unavailable}"
+            printf 'dependencies=%s\n' "${V0515_STEP_DEPS:-unavailable}"
+            printf 'checkout=%s\n' "${V0515_STEP_CHECKOUT:-unavailable}"
+            printf 'post_checkout_init=%s\n' "${V0515_STEP_POSTCHECKOUT:-unavailable}"
+            printf 'lock_artifact_discovery=%s\n' "${V0515_STEP_LOCK_DISCOVERY:-unavailable}"
+            printf 'lock_receipt_download=%s\n' "${V0515_STEP_LOCK_DOWNLOAD:-unavailable}"
+            printf 'lock_lineage_verification=%s\n' "${V0515_STEP_LOCK_VERIFY:-unavailable}"
+            printf 'source_extraction=%s\n' "${V0515_STEP_EXTRACT:-unavailable}"
+            printf 'python_regressions=%s\n' "${V0515_STEP_TESTS:-unavailable}"
+            printf 'cpp_build=%s\n' "${V0515_STEP_BUILD:-unavailable}"
+            printf 'simulations=%s\n' "${V0515_STEP_SIMULATE:-unavailable}"
+            printf '%s\n' 'Scientific gates are NOT changed by the diagnostic stage.'
+            printf '%s\n' 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false'
+            printf '%s\n' 'To identify root cause, see first failed step in Actions logs; include this summary.'
+          } > "$diag/EXECUTOR_RUN_DIAGNOSTICS.txt"
+          for name in apt_update apt_install; do
+            if [ -f "/tmp/v0515_${name}.log" ]; then
+              cp "/tmp/v0515_${name}.log" "$diag/${name}.log" || true
+            fi
+          done
+          {
+            printf '%s\n' 'Existing diagnostic files:'
+            find "$diag" -maxdepth 2 -type f -printf '%P\n' | sort || true
+            printf '%s\n' 'Main output directories:'
+            for p in episode_output/stage1am_f3_pathwide_witness_dev episode_output/stage1am_f3_pathwide_witness_report; do
+              if [ -d "$p" ]; then
+                printf 'PRESENT %s\n' "$p"
+              else
+                printf 'NOT_CREATED %s\n' "$p"
+              fi
+            done
+          } > "$diag/OUTPUT_INVENTORY.txt"
+          test -s "$diag/EXECUTOR_RUN_DIAGNOSTICS.txt"
       - name: Upload evidence, diagnostics and RAW witness traces even on failure
         if: always()
         uses: actions/upload-artifact@v4
