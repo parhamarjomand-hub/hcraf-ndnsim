@@ -1,0 +1,144 @@
+name: "HCRAF F3 Pathwide Witness DEV Matrix LOCK ONLY (v0.51.5)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lock-matrix:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Initialize a diagnostic file before any other operation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0515_matrix_lock
+          python3 - <<'PYINIT'
+          import json,os,pathlib
+          out=pathlib.Path('episode_output/v0515_matrix_lock/diagnostic_status.json')
+          out.write_text(json.dumps({'status':'STARTED_NOT_A_VALID_LOCK',
+            'run_id':os.getenv('GITHUB_RUN_ID'), 'run_attempt':os.getenv('GITHUB_RUN_ATTEMPT'),
+            'head_sha':os.getenv('GITHUB_SHA'),
+            'note':'Only matrix_lock_receipt.json with PASS status plus successful GitHub run authorizes the executor.'},indent=2)+'\n')
+          PYINIT
+      - name: Checkout complete Git history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate v0.51.4 preregistration lineage and immutable v0.51.5 source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0515_matrix_lock/staged
+          git config --global --add safe.directory "$PWD"
+          git merge-base --is-ancestor 7b38f1619fa3fde91c1d58d94db4b15ad1850da0 HEAD
+          test "$(git rev-parse HEAD)" != "7b38f1619fa3fde91c1d58d94db4b15ad1850da0"
+          echo "1b7ecd6bed08e3e2b965f5d04663acbeaf893950bdd56d2b084d12f50ead9304  hcraf_stage1am_f3_pathwide_witness_prereg_v0514_sources.zip" | sha256sum -c -
+          echo "bfbd90c638692ba241a161eaf5dcadfbc7dceae82ba4d5f236e863b2d849b28f  hcraf_stage1am_f3_pathwide_witness_dev_v0515_sources.zip" | sha256sum -c -
+          python3 - <<'PYSTAGE'
+          import hashlib,json,pathlib,stat,zipfile
+          zp=pathlib.Path('hcraf_stage1am_f3_pathwide_witness_dev_v0515_sources.zip')
+          dest=pathlib.Path('episode_output/v0515_matrix_lock/staged')
+          mn='HCRAF_F3_PATHWIDE_WITNESS_DEV_V0515_SOURCE_SHA256.json'
+          with zipfile.ZipFile(zp) as z:
+            assert z.testzip() is None,'SOURCE_CRC'
+            names=z.namelist()
+            assert len(names)==len(set(names)) and mn in names,'MEMBERS'
+            manifest=json.loads(z.read(mn))
+            assert manifest['schema']=='HCRAF_F3_PATHWIDE_WITNESS_DEV_V0515_SOURCE_SHA256'
+            assert manifest['status']=='DEV_CODE_PREPARED_NOT_RUN_MATRIX_NOT_YET_LOCKED'
+            assert manifest['science']=={'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False}
+            assert set(names)==set(manifest['files'])|{mn},'MANIFEST_MEMBER_SET'
+            for n in names:
+              p=pathlib.PurePosixPath(n);info=z.getinfo(n)
+              assert n and not n.startswith('/') and '..' not in p.parts and '\\' not in n,'UNSAFE_PATH'
+              assert not stat.S_ISLNK(info.external_attr>>16),'SYMLINK'
+              if n==mn:continue
+              data=z.read(n)
+              assert hashlib.sha256(data).hexdigest()==manifest['files'][n],n
+              target=dest.joinpath(*p.parts)
+              target.parent.mkdir(parents=True,exist_ok=True)
+              assert not target.exists(),'DUP_DESTINATION'
+              target.write_bytes(data)
+          PYSTAGE
+      - name: Verify fixed schedules, matrix, science locks and tests (ZERO simulations)
+        shell: bash
+        run: |
+          set -euo pipefail
+          root='episode_output/v0515_matrix_lock/staged/hcraf/episode/docs/1AM/F3_PATHWIDE_WITNESS_DEV_v0.51.5'
+          echo "ebfc115dca3f04b096e184cd429ed92dd5d3adcbc9389e9f11301d712c8695b7  $root/RUN_MATRIX_LOCKED_84.csv" | sha256sum -c -
+          echo "c44f345d77d12972579a4237f7fee18504f6fbb4a906447d98d9a5c1d64e7ba1  $root/SCIENTIFIC_PROTOCOL_FA.md" | sha256sum -c -
+          python3 "$root/generate_prereg.py" --verify "$root" > episode_output/v0515_matrix_lock/schedules_verification.json
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s episode_output/v0515_matrix_lock/staged/hcraf/episode/tests -p 'test_stage1am_f3_pathwide_witness_dev.py' -v > episode_output/v0515_matrix_lock/unit_tests.log 2>&1
+          tail -8 episode_output/v0515_matrix_lock/unit_tests.log
+      - name: Issue auditable lock receipt bound to Git Commit and matrix bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRECEIPT'
+          import json,os,pathlib,subprocess
+          out=pathlib.Path('episode_output/v0515_matrix_lock')
+          receipt={'status':'PASS_PATHWIDE_WITNESS_MATRIX_LOCK_ONLY_NO_NDNSIM_RUN',
+            'stage':'1AM-F3-PATHWIDE-INDEPENDENT-WITNESS-DEV-EXECUTOR',
+            'github_run_id':os.environ['GITHUB_RUN_ID'],
+            'github_run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+            'git_commit_sha':subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip(),
+            'source_zip_sha256':'bfbd90c638692ba241a161eaf5dcadfbc7dceae82ba4d5f236e863b2d849b28f',
+            'matrix_sha256':'ebfc115dca3f04b096e184cd429ed92dd5d3adcbc9389e9f11301d712c8695b7',
+            'protocol_sha256':'c44f345d77d12972579a4237f7fee18504f6fbb4a906447d98d9a5c1d64e7ba1',
+            'parent_prereg_commit':'7b38f1619fa3fde91c1d58d94db4b15ad1850da0',
+            'parent_prereg_run_id':'42955072036',
+            'rng_blocks':12,'monitored_runs':72,'unmonitored_runs':12,
+            'simulations_executed':0,'cpp_compiled':False,
+            'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+            'GO_FREEZE':False,'training_ready':False}
+          (out/'matrix_lock_receipt.json').write_text(json.dumps(receipt,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(receipt,indent=2))
+          PYRECEIPT
+      - name: Validate that the lock receipt exists and matches the immutable design
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCONFIRM'
+          import json,os,pathlib
+          root=pathlib.Path('episode_output/v0515_matrix_lock')
+          receipt=json.loads((root/'matrix_lock_receipt.json').read_text())
+          assert receipt['status']=='PASS_PATHWIDE_WITNESS_MATRIX_LOCK_ONLY_NO_NDNSIM_RUN'
+          assert str(receipt['github_run_id'])==os.environ['GITHUB_RUN_ID']
+          assert receipt['source_zip_sha256']=='bfbd90c638692ba241a161eaf5dcadfbc7dceae82ba4d5f236e863b2d849b28f'
+          assert receipt['matrix_sha256']=='ebfc115dca3f04b096e184cd429ed92dd5d3adcbc9389e9f11301d712c8695b7'
+          assert receipt['protocol_sha256']=='c44f345d77d12972579a4237f7fee18504f6fbb4a906447d98d9a5c1d64e7ba1'
+          assert receipt['simulations_executed']==0 and receipt['F3_ready'] is False
+          for f in ('schedules_verification.json','unit_tests.log'):
+            assert (root/f).is_file() and (root/f).stat().st_size>0,f
+          (root/'diagnostic_status.json').write_text(json.dumps({
+            'status':'VALID_LOCK_RECEIPT_PRODUCED',
+            'run_id':os.environ['GITHUB_RUN_ID'],
+            'artifact_name':'hcraf-f3-pathwide-witness-matrix-lock-v0515'},indent=2)+'\n')
+          print('LOCK_RECEIPT_READY_FOR_ARTIFACT_UPLOAD')
+          PYCONFIRM
+      - name: Upload matrix lock receipt and diagnostics (also on failed lock runs)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-pathwide-witness-matrix-lock-v0515
+          path: episode_output/v0515_matrix_lock/
+          if-no-files-found: error
+      - name: Show where to find the artifact and which Run ID to copy
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## HCRAF v0.51.5 matrix lock'
+            echo "- This workflow Run ID: \`$GITHUB_RUN_ID\`"
+            echo '- Expected artifact: `hcraf-f3-pathwide-witness-matrix-lock-v0515`'
+            if test -f episode_output/v0515_matrix_lock/matrix_lock_receipt.json; then
+              echo '- Lock receipt file: generated; check that this run concluded **Success**.'
+            else
+              echo '- Lock receipt file: NOT generated. This run is **not** a valid preregistration lock; inspect job logs and diagnostic_status.json.'
+            fi
+            echo '- Enter the **Run ID of this successful Matrix LOCK run**, not the v0.51.4 preregistration Run ID, into executor `lock_run_id`.'
+          } >> "$GITHUB_STEP_SUMMARY"
