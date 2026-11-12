@@ -18,6 +18,12 @@ jobs:
     container: ubuntu:20.04
     timeout-minutes: 355
     steps:
+      - name: Initialize guaranteed executor failure diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0515_preflight
+          printf 'Status: EXECUTOR_STARTED_NOT_AUTHORIZED. Verify MATRIX LOCK artifact before simulations.\n' > episode_output/v0515_preflight/START_HERE_ON_FAILURE.txt
       - name: Install pinned ndnSIM runtime and source verification dependencies
         shell: bash
         run: |
@@ -33,6 +39,59 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Confirm Matrix LOCK run and exact artifact exist (fail clearly if absent)
+        shell: bash
+        env:
+          LOCK_RUN_ID: ${{ inputs.lock_run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYARTIFACT'
+          import json,os,pathlib,re,urllib.error,urllib.request
+          out=pathlib.Path('episode_output/v0515_preflight/lock_artifact_discovery.json')
+          name='hcraf-f3-pathwide-witness-matrix-lock-v0515'
+          run_id=os.environ.get('LOCK_RUN_ID','').strip()
+          diag={'requested_run_id':run_id, 'expected_artifact':name,'status':'FAILED_NOT_AUTHORIZED'}
+          def save(): out.write_text(json.dumps(diag,ensure_ascii=False,indent=2,sort_keys=True)+'\n')
+          try:
+            if not re.fullmatch(r'[0-9]+',run_id) or int(run_id)<=0:
+              raise RuntimeError('LOCK_RUN_ID_INVALID: enter the successful v0.51.5 Matrix LOCK run ID')
+            repo=os.environ['GITHUB_REPOSITORY']
+            token=os.environ.get('GH_TOKEN','')
+            if not token: raise RuntimeError('GITHUB_TOKEN_MISSING: actions:read is required')
+            headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
+                     'User-Agent':'HCRAF-v0515-Lock-Artifact-Guard',
+                     'X-GitHub-Api-Version':'2022-11-28'}
+            def get(url):
+              with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=30) as res:
+                return json.load(res)
+            url='https://api.github.com/repos/'+repo+'/actions/runs/'+run_id
+            run=get(url)
+            diag.update(run_conclusion=run.get('conclusion'),run_status=run.get('status'),
+                        workflow_path=run.get('path'),run_head_sha=run.get('head_sha'))
+            if not (run.get('path') or '').endswith('/hcraf-stage1am-f3-pathwide-witness-matrix-lock-v0.51.5.yml'):
+              raise RuntimeError('WRONG_RUN_ID: this run is not the v0.51.5 Matrix LOCK workflow')
+            if run.get('conclusion')!='success':
+              raise RuntimeError('MATRIX_LOCK_NOT_SUCCESSFUL: open Matrix LOCK logs; do not run DEV executor')
+            found=[]
+            for page in range(1,6):
+              data=get(url+'/artifacts?per_page=100&page='+str(page))
+              batch=data.get('artifacts',[])
+              found.extend(batch)
+              if len(batch)<100:break
+            diag['available_artifact_names']=[a.get('name') for a in found]
+            valid=[a for a in found if a.get('name')==name and not a.get('expired')]
+            if not valid:
+              raise RuntimeError('LOCK_ARTIFACT_NOT_FOUND: exact name missing or expired; run v0.51.5 Matrix LOCK with fixed workflow, verify its success and copy its Run ID')
+            diag.update(status='LOCK_RUN_AND_ARTIFACT_DISCOVERED',artifact_id=valid[0].get('id'))
+            save()
+            print('PASS_LOCK_ARTIFACT_DISCOVERED',run_id,name)
+          except Exception as err:
+            diag['error']=str(err)
+            save()
+            print('STOP_BEFORE_SIMULATIONS:',str(err),flush=True)
+            raise SystemExit(1)
+          PYARTIFACT
       - name: Download matrix lock receipt from prior successful GitHub run
         uses: actions/download-artifact@v4
         with:
@@ -134,8 +193,61 @@ jobs:
           echo "ebfc115dca3f04b096e184cd429ed92dd5d3adcbc9389e9f11301d712c8695b7  $root/RUN_MATRIX_LOCKED_84.csv" | sha256sum -c -
           echo "c44f345d77d12972579a4237f7fee18504f6fbb4a906447d98d9a5c1d64e7ba1  $root/SCIENTIFIC_PROTOCOL_FA.md" | sha256sum -c -
           python3 "$root/generate_prereg.py" --verify "$root" > episode_output/v0515_preflight/schedules_verification.json
-          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_*.py' -q > episode_output/v0515_preflight/all_python_tests.log 2>&1
-          tail -12 episode_output/v0515_preflight/all_python_tests.log
+          # Stage1T historical tests require raw Stage1S fixture run directories.
+          # The approved Stage1S source-reference ZIP is NOT a replacement for those raw fixtures.
+          # Execute the entire suite only if all 12 fixtures exist; otherwise defer ONLY
+          # the 20 fixture-dependent Stage1T test methods and record INCOMPLETE coverage.
+          # Any other failing test is fatal. Never claim full historical regression PASS.
+          PYTHONDONTWRITEBYTECODE=1 python3 - <<'PYREGRESSION' > episode_output/v0515_preflight/all_python_tests.log 2>&1
+          import json,os,pathlib,sys,unittest
+          root=pathlib.Path('episode_output/v0515_preflight')
+          test_file=pathlib.Path('hcraf/episode/tests/test_data_pit_stage1t.py').resolve()
+          assert test_file.is_file(),'MISSING_STAGE1T_TEST_SOURCE'
+          fixture=pathlib.Path(os.environ.get('HCRAF_STAGE1S_RUN_ROOT',str(test_file.parents[4]/'artifact'/'stage1s')))
+          modes=('baseline','repeat-name','retransmission','aggregation','cache-hit','multi-hop')
+          required=[fixture/mode/('run-%d'%run) for mode in modes for run in (1001,1002)]
+          found=[p for p in required if p.is_dir()]
+          complete=len(found)==len(required)
+          if not complete and found:
+              raise SystemExit('PARTIAL_STAGE1S_FIXTURES_REJECTED: missing '+str([str(p) for p in required if not p.is_dir()]))
+          loader=unittest.TestLoader()
+          suite=loader.discover('hcraf/episode/tests',pattern='test_*.py')
+          def flatten(item):
+              if isinstance(item,unittest.TestSuite):
+                  for child in item: yield from flatten(child)
+              else: yield item
+          cases=list(flatten(suite))
+          stage1t=[t for t in cases if t.__class__.__module__=='test_data_pit_stage1t']
+          new=[t for t in cases if t.__class__.__module__=='test_stage1am_f3_pathwide_witness_dev']
+          assert len(stage1t)==20, 'STAGE1T_TEST_COUNT_CHANGED:'+str(len(stage1t))
+          assert len(new)==25,'V0515_TEST_COUNT_CHANGED:'+str(len(new))
+          assert len(cases)>=717,'REGRESSION_SUITE_UNEXPECTEDLY_SMALL:'+str(len(cases))
+          selected=cases if complete else [t for t in cases if t.__class__.__module__!='test_data_pit_stage1t']
+          print('HISTORICAL_STAGE1S_FIXTURE_ROOT',fixture,flush=True)
+          print('STAGE1S_FIXTURE_DIRS_PRESENT',len(found),'/',len(required),flush=True)
+          print('TESTS_DISCOVERED',len(cases),'SELECTED',len(selected),'DEFERRED',len(cases)-len(selected),flush=True)
+          res=unittest.TextTestRunner(stream=sys.stderr,verbosity=1).run(unittest.TestSuite(selected))
+          status={
+            'stage':'1AM-F3-PATHWIDE-INDEPENDENT-WITNESS-DEV-EXECUTOR',
+            'regression_status':'PASS_FULL_HISTORICAL_SUITE' if complete else 'PASS_AVAILABLE_SUITE_HISTORICAL_STAGE1S_INCOMPLETE',
+            'historical_stage1s_status':'COMPLETE' if complete else 'INCOMPLETE_MISSING_RAW_RUN_FIXTURES',
+            'fixture_root':str(fixture),'required_fixture_directories':[str(p) for p in required],
+            'missing_fixture_directories':[str(p) for p in required if not p.is_dir()],
+            'total_discovered_tests':len(cases),'executed_tests':res.testsRun,
+            'deferred_fixture_dependent_test_methods':0 if complete else len(stage1t),
+            'v0515_test_methods_in_suite':len(new),
+            'failures':len(res.failures),'errors':len(res.errors),'skipped':len(res.skipped),
+            'all_available_tests_passed':res.wasSuccessful(),
+            'historical_full_suite_verified':complete and res.wasSuccessful(),
+            'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+            'GO_FREEZE':False,'training_ready':False,
+          }
+          (root/'historical_regression_coverage.json').write_text(json.dumps(status,indent=2,sort_keys=True)+'\n')
+          print(json.dumps({k:status[k] for k in ('regression_status','total_discovered_tests','executed_tests','deferred_fixture_dependent_test_methods','failures','errors','historical_full_suite_verified')},sort_keys=True),flush=True)
+          if not res.wasSuccessful(): raise SystemExit('AVAILABLE_REGRESSION_TESTS_FAILED')
+          PYREGRESSION
+          tail -16 episode_output/v0515_preflight/all_python_tests.log
+          cat episode_output/v0515_preflight/historical_regression_coverage.json | head -24
           python3 hcraf/episode/scripts/run_stage1am_f3_pathwide_witness_dev.py --preflight-only > episode_output/v0515_preflight/matrix_preflight.json
       - name: Compile separate C++ witness B and scenario
         shell: bash
@@ -158,5 +270,5 @@ jobs:
             episode_output/v0515_preflight/
             episode_output/stage1am_f3_pathwide_witness_dev/
             episode_output/stage1am_f3_pathwide_witness_report/
-          if-no-files-found: warn
+          if-no-files-found: error
           compression-level: 6
