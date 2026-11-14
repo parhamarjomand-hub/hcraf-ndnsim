@@ -1,0 +1,170 @@
+name: "HCRAF F3 Future Path Queue Pressure Construct Prereg LOCK ONLY (v0.52.0)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  f3-physical-pressure-construct-lock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout committed source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Initialize diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0520_prereg
+          echo 'STARTED_NOT_YET_LOCKED_NO_SIMULATION' > episode_output/v0520_prereg/STATUS.txt
+          printf 'github_run_id=%s\ngithub_sha=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" > episode_output/v0520_prereg/RUN_CONTEXT.txt
+
+      - name: Verify committed ZIP hash and provenance chain
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          git merge-base --is-ancestor a77704bb631cf2fac74ade2e28bc7c19b9b0fb53 HEAD
+          echo "0523ad0ef216426d128596fdf15bc91e1c78523346dab2bbd843c16cf139601e  hcraf_stage1am_f3_future_path_queue_pressure_prereg_v0520_sources.zip" | sha256sum -c -
+          echo "76a1a0e184f471a7fb3d78b8a44213e0d47a852fa45311b74e73795a1a557a05  hcraf_stage1am_f3_bottleneck_relocation_prereg_v0517_sources.zip" | sha256sum -c -
+          python3 - <<'PYCOMMIT'
+          import hashlib,subprocess
+          for filename,expected in (
+            ('hcraf_stage1am_f3_future_path_queue_pressure_prereg_v0520_sources.zip','0523ad0ef216426d128596fdf15bc91e1c78523346dab2bbd843c16cf139601e'),
+            ('hcraf_stage1am_f3_bottleneck_relocation_prereg_v0517_sources.zip','76a1a0e184f471a7fb3d78b8a44213e0d47a852fa45311b74e73795a1a557a05')):
+              data=subprocess.check_output(['git','show','HEAD:'+filename])
+              assert hashlib.sha256(data).hexdigest()==expected,'NOT_COMMITTED_OR_BAD_HASH:'+filename
+          print('PASS_COMMITTED_SHA_AND_PARENT_ANCESTRY')
+          PYCOMMIT
+
+      - name: Extract ONLY new source safely under episode_output
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYEXTRACT'
+          import hashlib,json,pathlib,stat,zipfile
+          src=pathlib.Path('hcraf_stage1am_f3_future_path_queue_pressure_prereg_v0520_sources.zip')
+          dst=pathlib.Path('episode_output/v0520_prereg/staged')
+          marker='HCRAF_F3_FUTURE_PATH_QUEUE_PRESSURE_V0520_SOURCE_SHA256.json'
+          with zipfile.ZipFile(src) as z:
+            assert z.testzip() is None,'ZIP_CRC_FAIL'
+            names=z.namelist()
+            assert len(names)==len(set(names)),'DUPLICATE_FILE_NAME'
+            assert marker in names,'SOURCE_MANIFEST_MISSING'
+            m=json.loads(z.read(marker))
+            assert m['schema']==marker.replace('_SOURCE_SHA256.json','_SOURCE_SHA256')
+            assert m['status']=='LOCK_ONLY_NO_NDNSIM_AND_NO_PREDICTOR_TRAINING'
+            assert m['planned_runs']==648 and m['simulations_executed']==0
+            assert m['science']=={'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False}
+            assert set(names)==set(m['source_files'])|{marker},'MANIFEST_MEMBER_SET_MISMATCH'
+            for n in names:
+              p=pathlib.PurePosixPath(n);info=z.getinfo(n)
+              assert n and not n.startswith('/') and '\\' not in n and '..' not in p.parts, 'UNSAFE_ZIP_PATH:'+n
+              assert not stat.S_ISLNK(info.external_attr>>16),'UNSAFE_SYMLINK:'+n
+              data=z.read(n)
+              if n!=marker:assert hashlib.sha256(data).hexdigest()==m['source_files'][n], 'MEMBER_SHA_MISMATCH:'+n
+              dest=dst.joinpath(*p.parts)
+              assert not dest.exists(),'OVERWRITTEN_EXTRACTED_SOURCE:'+n
+              dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(data)
+          print('PASS_SAFE_EXTRACT_NEW_SOURCE')
+          PYEXTRACT
+
+      - name: Verify immutable matrix, witness topology, protocols and 24 unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          root='episode_output/v0520_prereg/staged/hcraf/episode/docs/1AM/F3_FUTURE_PATH_QUEUE_PRESSURE_PREREG_v0.52.0'
+          echo '920c190702526ad11efc10781ce23c629e7918932b4c52159fbfb96234600bd3  '"$root"'/RUN_MATRIX_LOCKED_648.csv' | sha256sum -c -
+          echo '6a35930586c4891fe4fc4a9425b9a6f56857f8a6297685be6f1c2cdfd58d97cc  '"$root"'/SCHEDULE_INDEX_LOCKED_72.csv' | sha256sum -c -
+          echo 'f6f80c479ddb77c7c71f9481ce2cffc12365557e86aabba083aaf317aacb1693  '"$root"'/RNG_SPLIT_LOCKED_36.csv' | sha256sum -c -
+          echo '6996b2e17fa72916b383c3406f8f8d0150b5b597d3b890553906311a28291e5d  '"$root"'/SCIENTIFIC_PROTOCOL_FA.md' | sha256sum -c -
+          echo '2a1d0ced27b91f7ac0d5f2b19be16d8e1219a5320d12d461d75bba34d1e82964  '"$root"'/INTERVENTION_SITES_LOCKED_12.csv' | sha256sum -c -
+          echo '1cadf975285fe7327915deb6d3b4d9f7d9e238b0a842c550ad4f70b9a73198a4  '"$root"'/label_rules.py' | sha256sum -c -
+          echo 'acb59e75424f0c28f2424acbb34433265b0f208cb1f832e88258577007e0eb8b  '"$root"'/CONSTRUCT_SPEC_LOCKED.json' | sha256sum -c -
+          python3 "$root/generate_prereg_v0520.py" --verify "$root" > episode_output/v0520_prereg/design_verification.json
+          python3 - <<'PYPARENT'
+          import csv,io,json,pathlib,zipfile
+          old='hcraf/episode/docs/1AM/F3_PATHWIDE_BOTTLENECK_RELOCATION_PREREG_v0.51.7/INTERVENTION_SITES_LOCKED_12.csv'
+          new=pathlib.Path('episode_output/v0520_prereg/staged/hcraf/episode/docs/1AM/F3_FUTURE_PATH_QUEUE_PRESSURE_PREREG_v0.52.0/INTERVENTION_SITES_LOCKED_12.csv')
+          with zipfile.ZipFile('hcraf_stage1am_f3_bottleneck_relocation_prereg_v0517_sources.zip') as z:
+            historical=list(csv.DictReader(io.StringIO(z.read(old).decode())))
+          current=list(csv.DictReader(new.read_text().splitlines()))
+          keys=('selected_slot','intervention_location','sender_node_id','sender_device_index','receiver_node_id','receiver_device_index')
+          assert len(historical)==len(current)==12
+          assert {tuple(r[k] for k in keys) for r in historical}=={tuple(r[k] for k in keys) for r in current},'PATH_MAP_CHANGED'
+          print('PASS_UNCHANGED_PHYSICAL_INTERVENTION_MAP_12')
+          PYPARENT
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s episode_output/v0520_prereg/staged/hcraf/episode/tests \
+            -p 'test_stage1am_f3_construct_prereg_v0520.py' -v \
+            > episode_output/v0520_prereg/unit_tests.log 2>&1 || { tail -n 120 episode_output/v0520_prereg/unit_tests.log; exit 1; }
+          tail -n 5 episode_output/v0520_prereg/unit_tests.log
+          echo PASS_DESIGN_AND_24_TESTS_NO_SIMULATION > episode_output/v0520_prereg/STATUS.txt
+
+      - name: Write receipt anchored to current Git commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRECEIPT'
+          import hashlib,json,os,pathlib,subprocess
+          output=pathlib.Path('episode_output/v0520_prereg')
+          verify=json.loads((output/'design_verification.json').read_text())
+          assert verify['status']=='PASS_V0520_PREREG_DESIGN_ONLY_NO_NDNSIM'
+          assert verify['total_runs']==648 and verify['calibration_runs']==216 and verify['heldout_runs']==432
+          root=pathlib.Path('episode_output/v0520_prereg/staged/hcraf/episode/docs/1AM/F3_FUTURE_PATH_QUEUE_PRESSURE_PREREG_v0.52.0')
+          science=json.loads((root/'SCIENCE_LOCKS.json').read_text())
+          assert science['heldout_release_authorized'] is False
+          assert science['Congestion'] is None and science['FutureCongestion'] is None
+          assert not science['F3_ready'] and not science['GO_FREEZE'] and not science['training_ready']
+          commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          assert commit==os.environ['GITHUB_SHA']
+          receipt={'result':'PASS_V0520_CONSTRUCT_PREREG_LOCK_ONLY_NO_NDNSIM',
+            'github_run_id':os.environ['GITHUB_RUN_ID'],'github_run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+            'git_commit_sha':commit,'source_zip_sha256':'0523ad0ef216426d128596fdf15bc91e1c78523346dab2bbd843c16cf139601e',
+            'protocol_sha256':'6996b2e17fa72916b383c3406f8f8d0150b5b597d3b890553906311a28291e5d', 'matrix_sha256':'920c190702526ad11efc10781ce23c629e7918932b4c52159fbfb96234600bd3',
+            'rng_split_sha256':'f6f80c479ddb77c7c71f9481ce2cffc12365557e86aabba083aaf317aacb1693','label_rules_sha256':'1cadf975285fe7327915deb6d3b4d9f7d9e238b0a842c550ad4f70b9a73198a4',
+            'parent_prereg_run_id':'43242291541','v0519_exploratory_archive_sha256':'c0227688aa194f6056558ed571441fb6dae577038f9c524453143f039a59d251',
+            'planned_runs':648,'calibration_runs':216,'heldout_runs':432,'monitored_runs':576,
+            'heldout_release_authorized':False,'simulations_executed':0,'cpp_compiled':False,'model_frozen':False,
+            'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False}
+          (output/'prereg_lock_receipt.json').write_text(json.dumps(receipt,ensure_ascii=False,indent=2,sort_keys=True)+'\n')
+          (output/'STATUS.txt').write_text('PASS_V0520_CONSTRUCT_PREREG_LOCK_ONLY_NO_NDNSIM\n')
+          print('PASS_GIT_ANCHORED_F3_CONSTRUCT_PREREG_V0520',receipt['github_run_id'])
+          PYRECEIPT
+
+      - name: Always write diagnostic report
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0520_prereg
+          test -s episode_output/v0520_prereg/STATUS.txt || echo 'FAIL_NO_VALID_LOCK_RECEIPT' > episode_output/v0520_prereg/STATUS.txt
+          printf 'run_id=%s\nsha=%s\nreceipt_exists=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" "$(test -s episode_output/v0520_prereg/prereg_lock_receipt.json && echo yes || echo no)" > episode_output/v0520_prereg/UPLOAD_DIAGNOSTIC.txt
+
+      - name: Upload receipt or failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          path: episode_output/v0520_prereg/
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Summarize scientific status
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '## HCRAF v0.52.0 prospective candidate F3 construct LOCK ONLY'
+            echo "- GitHub Run: $GITHUB_RUN_ID"
+            echo '- 648 runs are PLANNED, 0 executed'
+            echo '- CALIBRATION 216 planned, HELDOUT 432 blocked pending separate gate'
+            echo '- Result valid only if this GitHub job succeeds and prereg_lock_receipt.json exists'
+            echo '- F3=NO_GO; Congestion/FutureCongestion=null, no NSGA-III or 1AO'
+          } >> "$GITHUB_STEP_SUMMARY"
