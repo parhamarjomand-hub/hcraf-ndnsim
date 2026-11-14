@@ -1,0 +1,248 @@
+name: "HCRAF F3 Future Path Queue Pressure CALIBRATION Executor ONLY (v0.52.1)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      lock_run_id:
+        description: "Successful v0.52.0 construct prereg LOCK Run ID"
+        required: true
+        type: string
+        default: "43567814962"
+      shard_id:
+        description: "Only CALIBRATION arm shards 0..7; START WITH 0. No heldout selector exists."
+        required: true
+        type: choice
+        default: "0"
+        options:
+          - "0"
+          - "1"
+          - "2"
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  future-queue-calibration-only:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 355
+    steps:
+      - name: Install pinned development dependencies
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update > /tmp/v0521_apt_update.log 2>&1
+          apt-get install -y --no-install-recommends git curl ca-certificates build-essential \
+            python3 python3-dev python3-setuptools python3-pip python3-pytest \
+            pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+            libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+            libevent-dev graphviz doxygen time > /tmp/v0521_apt_install.log 2>&1
+
+      - name: Checkout full Git ancestry
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create persistent diagnostics directory
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0521_calibration_preflight
+          echo 'CALIBRATION ONLY; NOT MODEL FREEZE; NO HELDOUT' > episode_output/v0521_calibration_preflight/START_HERE_ON_FAILURE.txt
+
+      - name: Verify genuine v0.52.0 GitHub prereg run and artifact
+        id: discover
+        shell: bash
+        env:
+          LOCK_RUN_ID: ${{ inputs.lock_run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v0521_calibration_preflight/artifact_discovery.log 2>&1
+          import json,os,re,urllib.request
+          rid=os.environ['LOCK_RUN_ID']
+          assert re.fullmatch('[0-9]+',rid) and rid=='43567814962','WRONG_PARENT_LOCK_RUN'
+          repo=os.environ['GITHUB_REPOSITORY'];tok=os.environ['GH_TOKEN'];assert tok
+          h={'Authorization':'Bearer '+tok,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-v0521-CALIBRATION'}
+          def get(url):
+              with urllib.request.urlopen(urllib.request.Request(url,headers=h),timeout=45) as r:return json.load(r)
+          u=f'https://api.github.com/repos/{repo}/actions/runs/{rid}'
+          run=get(u)
+          assert run.get('conclusion')=='success','PARENT_LOCK_RUN_NOT_SUCCESS'
+          assert run.get('head_sha')=='3808ddcebc4480eefbe64f0a16c69afd35f05dcd','PARENT_LOCK_SHA_CHANGED'
+          assert run.get('path','').endswith('/hcraf-stage1am-f3-future-path-queue-pressure-prereg-v0.52.0.yml'),'WRONG_PARENT_WORKFLOW'
+          names=[]
+          for page in range(1,7):
+              a=get(u+f'/artifacts?per_page=100&page={page}').get('artifacts',[]);names.extend(a)
+              if len(a)<100:break
+          n='hcraf-f3-future-path-queue-pressure-prereg-v0520'
+          assert any(a['name']==n and not a['expired'] for a in names),'PARENT_ARTIFACT_MISSING'
+          print(json.dumps({'parent_run_id':rid,'parent_sha':run['head_sha'],'artifact':n,'status':'PASS_PARENT_DISCOVERY'},indent=2))
+          PY
+          cat episode_output/v0521_calibration_preflight/artifact_discovery.log
+
+      - name: Download genuine v0.52.0 prereg lock Artifact
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          run-id: ${{ inputs.lock_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/v0521_calibration_preflight/lock_artifact
+
+      - name: Verify prereg receipt, Git lineage and immutable source archive
+        id: lineage
+        shell: bash
+        env:
+          LOCK_RUN_ID: ${{ inputs.lock_run_id }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > episode_output/v0521_calibration_preflight/lineage.log 2>&1
+          import pathlib,os,hashlib,json,subprocess
+          r=json.loads(pathlib.Path('episode_output/v0521_calibration_preflight/lock_artifact/prereg_lock_receipt.json').read_text())
+          assert r['result']=='PASS_V0520_CONSTRUCT_PREREG_LOCK_ONLY_NO_NDNSIM'
+          assert str(r['github_run_id'])==os.environ['LOCK_RUN_ID']=='43567814962'
+          locksha=r['git_commit_sha'];assert locksha=='3808ddcebc4480eefbe64f0a16c69afd35f05dcd'
+          assert r['planned_runs']==648 and r['calibration_runs']==216 and r['heldout_runs']==432
+          assert r['matrix_sha256']=='920c190702526ad11efc10781ce23c629e7918932b4c52159fbfb96234600bd3'
+          assert r['source_zip_sha256']=='0523ad0ef216426d128596fdf15bc91e1c78523346dab2bbd843c16cf139601e'
+          assert r['simulations_executed']==0 and not r['heldout_release_authorized'] and not r['model_frozen']
+          for k,v in {'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,'training_ready':False}.items():assert r[k] is v,k
+          head=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
+          subprocess.check_call(['git','merge-base','--is-ancestor',locksha,head])
+          parent_zip='hcraf_stage1am_f3_future_path_queue_pressure_prereg_v0520_sources.zip'
+          cur=pathlib.Path(parent_zip).read_bytes()
+          committed=subprocess.check_output(['git','show',locksha+':'+parent_zip])
+          assert hashlib.sha256(cur).hexdigest()==hashlib.sha256(committed).hexdigest()==r['source_zip_sha256'],'PREREG_ZIP_MODIFIED'
+          new_zip='hcraf_stage1am_f3_future_path_queue_calibration_executor_v0521_sources.zip'
+          assert hashlib.sha256(pathlib.Path(new_zip).read_bytes()).hexdigest()=='30ca65f18895d24c0b23f5e44fa8504737aa6b19c0093c48976b3a67568381cc','NEW_EXECUTOR_ZIP_HASH_CHANGED'
+          assert r['parent_prereg_run_id']=='43242291541','WRONG_PARENT_0517'
+          print(json.dumps({'status':'PASS_PREREG_GIT_LINEAGE_AND_IMMUTABLE_ZIPS','lock_run_id':r['github_run_id'],'head':head,'heldout_release':False},indent=2))
+          PY
+          cat episode_output/v0521_calibration_preflight/lineage.log
+
+      - name: Safely restore pinned source dependencies and CALIBRATION executor
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v0521_calibration_preflight/extraction.log 2>&1
+          import pathlib,zipfile,hashlib,json,stat
+          sources=[
+           ('hcraf_stage1am_f3_mixed_sources.zip','f21a132299e88fdee65397b7d846c3fa47bc7ee041dd6a161e7bd48651c925da','.',None,None),
+           ('hcraf_stage1s_approved_reference.zip','b4fe49f0796ca6f12b2f140931e3158c6278dc5742309ea4c3f5f79c5502b8c4','artifact',None,None),
+           ('hcraf_stage1am_f3_pathwide_witness_dev_v0515_sources.zip','bfbd90c638692ba241a161eaf5dcadfbc7dceae82ba4d5f236e863b2d849b28f','.', 'HCRAF_F3_PATHWIDE_WITNESS_DEV_V0515_SOURCE_SHA256.json','files'),
+           ('hcraf_stage1am_f3_future_path_queue_pressure_prereg_v0520_sources.zip','0523ad0ef216426d128596fdf15bc91e1c78523346dab2bbd843c16cf139601e','.', 'HCRAF_F3_FUTURE_PATH_QUEUE_PRESSURE_V0520_SOURCE_SHA256.json','source_files'),
+           ('hcraf_stage1am_f3_future_path_queue_calibration_executor_v0521_sources.zip','30ca65f18895d24c0b23f5e44fa8504737aa6b19c0093c48976b3a67568381cc','.', 'HCRAF_F3_FUTURE_PATH_QUEUE_CALIBRATION_EXECUTOR_V0521_SOURCE_SHA256.json','files')]
+          for fn,expected,base,manifest,field in sources:
+              bs=pathlib.Path(fn).read_bytes();assert hashlib.sha256(bs).hexdigest()==expected,'SOURCE_ARCHIVE_CHANGED:'+fn
+              with zipfile.ZipFile(fn) as z:
+                  assert z.testzip() is None,'SOURCE_CRC_FAILED:'+fn
+                  names=z.namelist();assert len(names)==len(set(names)),'DUPLICATE_ZIP_ENTRIES'
+                  hashes=json.loads(z.read(manifest))[field] if manifest else None
+                  if hashes is not None:assert set(hashes)|{manifest}==set(names),'SOURCE_MANIFEST_MISMATCH:'+fn
+                  for n in names:
+                      if n.endswith('/'):continue
+                      p=pathlib.PurePosixPath(n)
+                      assert not n.startswith('/') and '..' not in p.parts and '\\' not in n,'UNSAFE_MEMBER:'+n
+                      assert not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'REFUSE_SYMLINK'
+                      b=z.read(n)
+                      if hashes is not None and n!=manifest:assert hashlib.sha256(b).hexdigest()==hashes[n],'SOURCE_HASH_MISMATCH:'+n
+                      dest=pathlib.Path(base).joinpath(*p.parts);dest.parent.mkdir(parents=True,exist_ok=True)
+                      if dest.exists():assert dest.read_bytes()==b,'REFUSE_OVERWRITE_DIFFERENT_BYTES:'+n
+                      else:dest.write_bytes(b)
+                      if dest.suffix=='.sh':dest.chmod(0o755)
+                  print('RESTORED',fn,len(names))
+          old=json.loads(pathlib.Path('HCRAF_STAGE1AM_V047_SOURCE_SHA256.json').read_text())['files']
+          assert len(old)==295,'PARENT_MANIFEST_COUNT_CHANGED'
+          for n,sha in old.items():assert hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest()==sha,'PARENT_FILE_CHANGED:'+n
+          print('PASS_FROZEN_LINEAGE_AND_SAFE_SOURCE_RESTORE')
+          PY
+          cat episode_output/v0521_calibration_preflight/extraction.log
+
+      - name: Verify v0.52.0 construct and CALIBRATION-only preflight
+        id: tests
+        shell: bash
+        env:
+          SHARD_ID: ${{ inputs.shard_id }}
+        run: |
+          set -euo pipefail
+          p=hcraf/episode/docs/1AM/F3_FUTURE_PATH_QUEUE_PRESSURE_PREREG_v0.52.0
+          python3 "$p/generate_prereg_v0520.py" --verify "$p" > episode_output/v0521_calibration_preflight/design_verification.json
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_future_path_queue_calibration_v0521.py' -v > episode_output/v0521_calibration_preflight/unit_tests.log 2>&1
+          tail -12 episode_output/v0521_calibration_preflight/unit_tests.log
+          python3 hcraf/episode/scripts/run_stage1am_f3_future_path_queue_calibration_v0521.py --shard-id "$SHARD_ID" --preflight-only > episode_output/v0521_calibration_preflight/shard_preflight.json
+          printf '20 historical Stage 1S fixture-dependent tests remain deferred, NOT PASS.\n' > episode_output/v0521_calibration_preflight/STAGE1S_DEFERRED.txt
+
+      - name: Compile unique v0.52.1 CALIBRATION C++ ndnSIM scenario
+        id: compile
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_future_path_queue_calibration_v0521.sh > episode_output/v0521_calibration_preflight/cpp_build.log 2>&1
+          tail -20 episode_output/v0521_calibration_preflight/cpp_build.log
+
+      - name: Run and audit exactly one 27-run CALIBRATION shard
+        id: simulate
+        shell: bash
+        env:
+          SHARD_ID: ${{ inputs.shard_id }}
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/run_stage1am_f3_future_path_queue_calibration_v0521.py --shard-id "$SHARD_ID" > episode_output/v0521_calibration_preflight/simulation_and_audit.log 2>&1
+          tail -25 episode_output/v0521_calibration_preflight/simulation_and_audit.log
+
+      - name: Preserve diagnostic inventory even on failure
+        if: always()
+        id: diagnostics
+        shell: bash
+        env:
+          STEP_DEPS: ${{ steps.deps.outcome }}
+          STEP_CHECKOUT: ${{ steps.checkout.outcome }}
+          STEP_DISCOVER: ${{ steps.discover.outcome }}
+          STEP_DOWNLOAD: ${{ steps.download.outcome }}
+          STEP_LINEAGE: ${{ steps.lineage.outcome }}
+          STEP_RESTORE: ${{ steps.restore.outcome }}
+          STEP_TESTS: ${{ steps.tests.outcome }}
+          STEP_COMPILE: ${{ steps.compile.outcome }}
+          STEP_SIMULATE: ${{ steps.simulate.outcome }}
+          SHARD_ID: ${{ inputs.shard_id }}
+        run: |
+          set -u
+          mkdir -p episode_output/v0521_calibration_preflight
+          {
+            echo 'v0.52.1 CALIBRATION Executor diagnostics (NO HELDOUT)'
+            echo "run_id=${GITHUB_RUN_ID:-unknown}"
+            echo "git_sha=${GITHUB_SHA:-unknown}"
+            echo "shard_id=$SHARD_ID"
+            echo "deps=$STEP_DEPS checkout=$STEP_CHECKOUT discover=$STEP_DISCOVER download=$STEP_DOWNLOAD"
+            echo "lineage=$STEP_LINEAGE restore=$STEP_RESTORE tests=$STEP_TESTS compile=$STEP_COMPILE simulate=$STEP_SIMULATE"
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false'
+          } > episode_output/v0521_calibration_preflight/EXECUTOR_RUN_DIAGNOSTICS.txt
+          find episode_output -maxdepth 4 -type f | sort > episode_output/v0521_calibration_preflight/OUTPUT_INVENTORY.txt
+          cp /tmp/v0521_apt_update.log episode_output/v0521_calibration_preflight/apt_update.log 2>/dev/null || true
+          cp /tmp/v0521_apt_install.log episode_output/v0521_calibration_preflight/apt_install.log 2>/dev/null || true
+          test -s episode_output/v0521_calibration_preflight/EXECUTOR_RUN_DIAGNOSTICS.txt
+
+      - name: Upload shard result OR failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-calibration-v0521-shard-${{ inputs.shard_id }}-run-${{ github.run_id }}
+          path: |
+            episode_output/v0521_calibration_preflight/
+            episode_output/stage1am_f3_future_queue_calibration_v0521/
+            episode_output/stage1am_f3_future_queue_calibration_report_v0521/
+          if-no-files-found: error
+          retention-days: 30
