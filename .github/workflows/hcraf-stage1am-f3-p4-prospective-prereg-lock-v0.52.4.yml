@@ -1,0 +1,142 @@
+name: "HCRAF F3 P4 Independent Prospective Prereg LOCK ONLY (v0.52.4)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prospective-design-lock-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout complete history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Initialize persistent diagnostics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/p4_v0524_prereg
+          echo 'STARTED_NOT_LOCKED_NO_NDNSIM' > episode_output/p4_v0524_prereg/STATUS.txt
+      - name: Verify original P3 and v0.52.0 parents on GitHub
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          git merge-base --is-ancestor 079cb06ae8cdef07abf6df3b2ff34b0607113b2a HEAD
+          git merge-base --is-ancestor 3808ddcebc4480eefbe64f0a16c69afd35f05dcd HEAD
+          python3 - <<'PY_PARENT' > episode_output/p4_v0524_prereg/parent_audit.json
+          import json,hashlib,os,pathlib,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          assert os.environ['GH_TOKEN']
+          base='https://api.github.com/repos/'+repo
+          headers={'Accept':'application/vnd.github+json','Authorization':'Bearer '+os.environ['GH_TOKEN'],'User-Agent':'HCRAF-P4-v0524-prereg'}
+          def get(u):
+           req=urllib.request.Request(u,headers=headers)
+           with urllib.request.urlopen(req,timeout=45) as r:return json.load(r)
+          parents=[
+           ('44354340404','079cb06ae8cdef07abf6df3b2ff34b0607113b2a','.github/workflows/hcraf-stage1am-f3-queue-pressure-feasibility-dev-v0.52.3.yml','hcraf-f3-queue-pressure-feasibility-v0523-run-44354340404','14452244240','sha256:a987ee25118bc3de9c4b341c66e036f2c34783f3390ad7cb97666c8214aca8b2'),
+           ('43567814962','3808ddcebc4480eefbe64f0a16c69afd35f05dcd','.github/workflows/hcraf-stage1am-f3-future-path-queue-pressure-prereg-v0.52.0.yml','hcraf-f3-future-path-queue-pressure-prereg-v0520',None,None)]
+          checks=[]
+          for rid,sha,wf,aname,aid,adigest in parents:
+           run=get(base+'/actions/runs/'+rid)
+           assert run['conclusion']=='success' and run['head_sha']==sha and run['path']==wf,'PARENT_RUN_DRIFT:'+rid
+           a=get(base+'/actions/runs/'+rid+'/artifacts?per_page=100')['artifacts']
+           hit=[x for x in a if x['name']==aname and not x['expired']]
+           assert len(hit)==1,'PARENT_ARTIFACT_MISSING:'+rid
+           if aid is not None:
+            assert str(hit[0]['id'])==aid,'P3_ARTIFACT_ID_MISMATCH'
+            assert hit[0].get('digest')==adigest,'P3_ARTIFACT_SHA256_MISMATCH'
+           checks.append({'run_id':rid,'head_sha':sha,'artifact_id':hit[0]['id'],'digest':hit[0].get('digest'),'status':'PASS'})
+          for fn,want in [
+           ('hcraf_stage1am_f3_queue_pressure_feasibility_dev_v0523_sources.zip','2864b8f1917ac38154dde24c42aaf1c03101eaf509c809c95a4113c1ce1ea382'),
+           ('hcraf_stage1am_f3_future_path_queue_pressure_prereg_v0520_sources.zip','0523ad0ef216426d128596fdf15bc91e1c78523346dab2bbd843c16cf139601e')]:
+           b=pathlib.Path(fn).read_bytes()
+           assert hashlib.sha256(b).hexdigest()==want,'SOURCE_PARENT_SHA_DRIFT:'+fn
+           committed=subprocess.check_output(['git','show','HEAD:'+fn])
+           assert committed==b,'UNCOMMITTED_OR_CHANGED_PARENT:'+fn
+          print(json.dumps({'status':'PASS_IMMUTABLE_P3_AND_V0520_PARENTS','parents':checks},indent=2))
+          PY_PARENT
+      - name: Verify exact committed source ZIP and securely stage all members
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '7c8976a9ebee7b21d93979648d8be08e7586b54fc712c334d19d1177c1803577  hcraf_stage1am_f3_p4_prospective_prereg_v0524_sources.zip' | sha256sum -c -
+          python3 - <<'PY_ZIP' > episode_output/p4_v0524_prereg/zip_audit.json
+          import hashlib,json,pathlib,stat,subprocess,zipfile
+          fn='hcraf_stage1am_f3_p4_prospective_prereg_v0524_sources.zip';raw=pathlib.Path(fn).read_bytes()
+          assert subprocess.check_output(['git','show','HEAD:'+fn])==raw,'ZIP_NOT_COMMITTED'
+          out=pathlib.Path('episode_output/p4_v0524_prereg/staged')
+          with zipfile.ZipFile(fn) as z:
+           assert z.testzip() is None,'CRC_INVALID'
+           names=z.namelist();assert len(names)==len(set(names)),'DUPLICATE_NAMES'
+           mn='HCRAF_F3_P4_V0524_SOURCE_SHA256.json'
+           m=json.loads(z.read(mn));assert m['stage']=='1AM_F3_P4_PROSPECTIVE_PREREG_ONLY_v0.52.4'
+           assert set(names)==set(m['source_files'])|{mn},'MEMBER_SET_DRIFT'
+           pending=[]
+           for n in names:
+            p=pathlib.PurePosixPath(n);info=z.getinfo(n)
+            assert n and not n.startswith('/') and '..' not in p.parts and '\\' not in n and not n.endswith('/'),'UNSAFE_NAME'
+            assert not stat.S_ISLNK(info.external_attr>>16),'SYMLINK_REJECTED'
+            data=z.read(n)
+            if n!=mn:assert hashlib.sha256(data).hexdigest()==m['source_files'][n],'MEMBER_HASH_MISMATCH:'+n
+            dest=out.joinpath(*p.parts);assert not dest.exists(),'NO_OVERWRITE'
+            pending.append((dest,data))
+           for d,b in pending:d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+           print(json.dumps({'status':'PASS_COMMITTED_SOURCE_AND_PER_FILE_SHA256','file_count':len(names),'source_sha256':'7c8976a9ebee7b21d93979648d8be08e7586b54fc712c334d19d1177c1803577'},indent=2))
+          PY_ZIP
+      - name: Verify matrix structure and prereg unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          d=episode_output/p4_v0524_prereg
+          python3 "$d/staged/hcraf/episode/docs/1AM/F3_P4_PROSPECTIVE_QUEUE_PRESSURE_v0.52.4/generate_prereg_v0524.py" --verify > "$d/design_verification.json"
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$d/staged/hcraf/episode/tests" -p 'test_stage1am_f3_p4_prereg_v0524.py' -v > "$d/unit_tests.log" 2>&1
+          grep -q 'Ran 10 tests' "$d/unit_tests.log"
+          tail -8 "$d/unit_tests.log"
+      - name: Write run-anchored prospective design receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY_RECEIPT'
+          import hashlib,json,os,pathlib,subprocess
+          d=pathlib.Path('episode_output/p4_v0524_prereg')
+          verify=json.loads((d/'design_verification.json').read_text())
+          assert verify['result']=='PASS_P4_V0524_PROSPECTIVE_PREREG_DESIGN_ONLY'
+          assert verify['simulations_executed']==0 and not verify['heldout_release_authorized']
+          commit=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip();assert commit==os.environ['GITHUB_SHA']
+          r={'result':'PASS_P4_V0524_PROSPECTIVE_PREREG_LOCK_ONLY_NO_NDNSIM',
+             'github_run_id':os.environ['GITHUB_RUN_ID'],'github_run_attempt':os.environ.get('GITHUB_RUN_ATTEMPT'),
+             'git_commit_sha':commit,'source_zip_sha256':'7c8976a9ebee7b21d93979648d8be08e7586b54fc712c334d19d1177c1803577',
+             'matrix_sha256':verify['sha_matrix'],'protocol_sha256':verify['sha_protocol'],
+             'parent_p3_run_id':'44354340404','parent_p3_artifact_id':'14452244240',
+             'parent_v0520_run_id':'43567814962','planned_runs':144,
+             'development_runs':48,'validation_runs':48,'heldout_runs':48,
+             'simulations_executed':0,'Congestion':None,'FutureCongestion':None,
+             'F3_ready':False,'GO_FREEZE':False,'training_ready':False,'heldout_release_authorized':False}
+          (d/'prereg_lock_receipt.json').write_text(json.dumps(r,ensure_ascii=False,sort_keys=True,indent=2)+'\n')
+          (d/'STATUS.txt').write_text(r['result']+'\n')
+          print(r['result'])
+          PY_RECEIPT
+      - name: Record failure-safe diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          mkdir -p episode_output/p4_v0524_prereg
+          { echo "run_id=${{ github.run_id }}";echo "commit=${{ github.sha }}";
+             echo "prereg_only=true";echo "no_simulation_no_heldout_no_training=true";
+             echo "all_science_locks_false_or_null=true"; } > episode_output/p4_v0524_prereg/EXECUTION_CONTEXT.txt
+          find episode_output/p4_v0524_prereg -type f | sort > episode_output/p4_v0524_prereg/FILE_INVENTORY.txt
+      - name: Upload lock artifact or diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p4-prospective-prereg-v0524-run-${{ github.run_id }}
+          path: episode_output/p4_v0524_prereg/
+          if-no-files-found: error
+          retention-days: 30
