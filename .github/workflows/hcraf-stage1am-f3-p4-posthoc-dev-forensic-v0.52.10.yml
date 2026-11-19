@@ -1,0 +1,174 @@
+name: "HCRAF F3 P4 Posthoc DEV Evidence Recovery (v0.52.10 P7)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  reconstruct-immutable-development-evidence-no-simulations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      V0529_SOURCE_SHA256: "6689c538befd0d74cdc305c5d12bcca6f2e594559d54e44a0c247e9c87f95ece"
+      V05210_SOURCE_SHA256: "3d164d32d5e7dccdc708c389e6179cff9949eedf0bd38f84a348bbe9a0080f96"
+      P4P7_PARENT_ZIP: "/tmp/hcraf-p4p7-pinned-parent-run-44541671109.zip"
+    steps:
+      - name: Checkout immutable ancestry and current independent ZIP source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Establish forensic-only scientific locks and directories
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05210_preflight
+          echo 'v0.52.10 P4/P7: POSTHOC DEVELOPMENT ONLY; v0.52.9 preregistered NO_GO remains NO_GO; zero new simulations, zero models, zero PR-AUC, zero Validation/Test.' > episode_output/v05210_preflight/START_HERE.txt
+
+      - name: Check failed parent run provenance and successfully completed all forty-eight physical simulations
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > episode_output/v05210_preflight/PINNED_GITHUB_PARENT_AND_JOB_GATES.log 2>&1
+          import json,os,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim', 'WRONG_REPOSITORY'
+          tok=os.environ['GH_TOKEN'];assert tok
+          head={'Authorization':'Bearer '+tok,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P4P7-v05210'}
+          def get(url):
+              with urllib.request.urlopen(urllib.request.Request(url,headers=head),timeout=60) as r:return json.load(r)
+          base='https://api.github.com/repos/'+repo
+          run=get(base+'/actions/runs/44541671109')
+          parent='8cda6ffe225e48ed584d448a7708fe0c685af078'
+          assert run['id']==44541671109 and run['status']=='completed' and run['conclusion']=='failure', 'PARENT_RUN_WRONG_STATUS'
+          assert run['head_sha']==parent and run['path'].endswith('/hcraf-stage1am-f3-p4-revised-development-v0.52.9.yml'), 'PARENT_NOT_PINNED_V0529'
+          subprocess.check_call(['git','merge-base','--is-ancestor',parent,'HEAD'])
+          artifact=get(base+'/actions/artifacts/14543216459')
+          assert artifact['name']=='hcraf-f3-p4-revised-prospective-dev-v0529-run-44541671109'
+          assert not artifact['expired'] and artifact['digest']=='sha256:ae7ce3870016be927f06e4c1d6ffc058f251f9075386b0a508bbd585e1b02f9a'
+          assert artifact.get('workflow_run',{}).get('id')==44541671109
+          jobs=get(base+'/actions/runs/44541671109/jobs?per_page=100')['jobs']
+          assert len(jobs)==1 and jobs[0]['conclusion']=='failure'
+          steps={s['name']:s['conclusion'] for s in jobs[0]['steps']}
+          assert steps['Run forty eight revised prospective development conditions only']=='success', 'PARENT_48_SIMULATIONS_NOT_COMPLETE'
+          assert steps['Construct separate leakage-gated DEVELOPMENT candidate tables']=='failure', 'PARENT_DID_NOT_STOP_AT_SCIENTIFIC_GATE'
+          print('PASS_PINNED_PARENT_FAILED_ONLY_AT_PRE_REGISTERED_SCIENCE_GATE')
+          print('PASS_48_REAL_SIMULATIONS_COMMITTED_PARENT_AND_ARTIFACT_DIGEST')
+          PY
+          cat episode_output/v05210_preflight/PINNED_GITHUB_PARENT_AND_JOB_GATES.log
+
+      - name: Verify both source ZIP preimages all members and restore only isolated new executor
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05210_preflight/NEW_SOURCE_AND_PARENT_SHA256_GATES.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          sources=[('hcraf_stage1am_f3_p4_revised_development_v0529_sources.zip',
+                    'V0529_SOURCE_SHA256','HCRAF_F3_P4_REVISED_DEV_V0529_SOURCE_SHA256.json'),
+                   ('hcraf_stage1am_f3_p4_posthoc_forensic_dev_v05210_sources.zip',
+                    'V05210_SOURCE_SHA256','HCRAF_F3_P4_POSTHOC_FORENSIC_V05210_SOURCE_SHA256.json')]
+          for basename,environment,manifest_name in sources:
+              data=pathlib.Path(basename).read_bytes()
+              assert hashlib.sha256(data).hexdigest()==os.environ[environment], 'SOURCE_SHA256_CHANGED:'+basename
+              assert subprocess.check_output(['git','show','HEAD:'+basename])==data, 'ROOT_SOURCE_NOT_COMMITTED:'+basename
+              with zipfile.ZipFile(io.BytesIO(data)) as z:
+                  assert z.testzip() is None, 'BAD_SOURCE_ZIP_CRC:'+basename
+                  members=z.namelist()
+                  assert len(members)==len(set(members)) and manifest_name in members
+                  manifest=json.loads(z.read(manifest_name))
+                  assert set(members)==set(manifest['files'])|{manifest_name}, 'SOURCE_MANIFEST_MEMBER_MISMATCH'
+                  for name,sha in manifest['files'].items():
+                      p=pathlib.PurePosixPath(name)
+                      assert name and not name.startswith('/') and '..' not in p.parts and '\\' not in name
+                      assert not stat.S_ISLNK(z.getinfo(name).external_attr>>16)
+                      assert hashlib.sha256(z.read(name)).hexdigest()==sha, 'SOURCE_FILE_SHA_CHANGED:'+name
+                  if 'v05210' in basename:
+                      assert manifest['stage']=='v0.52.10_P4_P7_POSTHOC_DEV_FORENSIC_ONLY'
+                      assert manifest['parent_run_id']==44541671109 and manifest['parent_artifact_id']==14543216459
+                      assert manifest['parent_artifact_sha256']=='ae7ce3870016be927f06e4c1d6ffc058f251f9075386b0a508bbd585e1b02f9a'
+                      assert manifest['new_simulations']==manifest['official_F3_labels_constructed']==0
+                      assert manifest['original_v0529_NO_GO_immutable'] is True
+                      assert manifest['validation_and_heldout_locked'] is True
+                      for key,value in {'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+                                        'GO_FREEZE':False,'training_ready':False,
+                                        'heldout_release_authorized':False}.items():
+                          assert manifest[key] is value, 'SOURCE_SCIENCE_LOCK_CHANGED:'+key
+                      target=pathlib.Path('episode_output/v05210_executor')
+                      for name in manifest['files']:
+                          p=target/name
+                          assert not p.exists(), 'OVERWRITE_NEW_SOURCE_FORBIDDEN:'+name
+                          p.parent.mkdir(parents=True,exist_ok=True)
+                          p.write_bytes(z.read(name))
+                  print('PASS_ARCHIVE_SHA_AND_ALL_SOURCE_FILE_SHA',basename,len(manifest['files']))
+          PY
+          cat episode_output/v05210_preflight/NEW_SOURCE_AND_PARENT_SHA256_GATES.log
+
+      - name: Download only the verified immutable GitHub parent ZIP without expanding four gigabytes of raw evidence
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 3 \
+            --connect-timeout 25 --max-time 900 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/14543216459/zip" \
+            --output "${P4P7_PARENT_ZIP}"
+          echo 'ae7ce3870016be927f06e4c1d6ffc058f251f9075386b0a508bbd585e1b02f9a  /tmp/hcraf-p4p7-pinned-parent-run-44541671109.zip' | sha256sum --check - \
+            > episode_output/v05210_preflight/PARENT_ZIP_FULL_SHA256.log
+          cat episode_output/v05210_preflight/PARENT_ZIP_FULL_SHA256.log
+
+      - name: Run independent anti-leakage partition and parent-lock tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONPATH=episode_output/v05210_executor/hcraf/episode/scripts \
+            python3 -m unittest discover \
+              -s episode_output/v05210_executor/hcraf/episode/tests \
+              -p 'test_stage1am_f3_p4_posthoc_recovery_v05210.py' -v \
+              > episode_output/v05210_preflight/CAUSAL_AND_SCIENCE_FENCE_TESTS.log 2>&1
+          tail -20 episode_output/v05210_preflight/CAUSAL_AND_SCIENCE_FENCE_TESTS.log
+
+      - name: Reconstruct separate DEV decision-time features and future diagnostics from all 48 archived cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 \
+            episode_output/v05210_executor/hcraf/episode/scripts/recover_stage1am_f3_p4_dev_evidence_v05210.py \
+            --parent-zip "${P4P7_PARENT_ZIP}" \
+            --output episode_output/stage1am_f3_p4_posthoc_dev_v05210 \
+            > episode_output/v05210_preflight/FORENSIC_RECONSTRUCTION_AND_FULL_PHYSICAL_CROSSCHECK.log 2>&1
+          tail -9 episode_output/v05210_preflight/FORENSIC_RECONSTRUCTION_AND_FULL_PHYSICAL_CROSSCHECK.log
+
+      - name: Always publish unchanged scientific fence and step diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p episode_output/v05210_preflight
+          {
+            echo 'v0.52.9=NO_GO_PRE_REGISTERED; v0.52.10=POSTHOC_EXPLORATORY_DEVELOPMENT_ONLY'
+            echo "run_id=${GITHUB_RUN_ID} head_sha=${GITHUB_SHA}"
+            echo '0 simulations, 0 official labels, 0 models, 0 PR-AUC; Validation/Test locked'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'Stage 1AO and NSGA-III prohibited'
+          } > episode_output/v05210_preflight/SCIENCE_LOCKS.txt
+
+      - name: Always upload small audit logs and DEV-only derived tables without duplicating parent raw artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p4-posthoc-dev-forensic-v05210-run-${{ github.run_id }}
+          path: |
+            episode_output/v05210_preflight/
+            episode_output/stage1am_f3_p4_posthoc_dev_v05210/
+          if-no-files-found: error
+          retention-days: 30
