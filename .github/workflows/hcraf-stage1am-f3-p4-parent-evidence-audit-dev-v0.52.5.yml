@@ -1,0 +1,143 @@
+name: "HCRAF F3 P4 P2 Parent Evidence Mapping Audit (v0.52.5)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  parent-evidence-audit-only:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout full source history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Create failure-safe output
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/p4_p2_v0525_audit
+          echo 'STARTED_NOT_A_SUCCESS_NO_NDNSIM_NO_F3' > episode_output/p4_p2_v0525_audit/STATUS.txt
+          printf 'run_id=%s\ncommit=%s\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" > episode_output/p4_p2_v0525_audit/RUN_CONTEXT.txt
+      - name: Pin P3 P4 and historical v0.52.0 Git ancestry
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          git merge-base --is-ancestor 059c6485957450d2ffcf7bb2b2a46656bb6088e2 HEAD
+          git merge-base --is-ancestor 079cb06ae8cdef07abf6df3b2ff34b0607113b2a HEAD
+          git merge-base --is-ancestor 3808ddcebc4480eefbe64f0a16c69afd35f05dcd HEAD
+          printf 'ca6d351f77b00c722bac6e56de677a1f29cade6f39c5826571495e58a984a176  hcraf_stage1am_f3_p4_parent_evidence_audit_v0525_sources.zip\n' | sha256sum -c -
+          printf '2864b8f1917ac38154dde24c42aaf1c03101eaf509c809c95a4113c1ce1ea382  hcraf_stage1am_f3_queue_pressure_feasibility_dev_v0523_sources.zip\n' | sha256sum -c -
+          printf '7c8976a9ebee7b21d93979648d8be08e7586b54fc712c334d19d1177c1803577  hcraf_stage1am_f3_p4_prospective_prereg_v0524_sources.zip\n' | sha256sum -c -
+          python3 - <<'PY'
+          import hashlib,subprocess,pathlib
+          for fn,commit in [('hcraf_stage1am_f3_queue_pressure_feasibility_dev_v0523_sources.zip','079cb06ae8cdef07abf6df3b2ff34b0607113b2a'),('hcraf_stage1am_f3_p4_prospective_prereg_v0524_sources.zip','059c6485957450d2ffcf7bb2b2a46656bb6088e2')]:
+              assert pathlib.Path(fn).read_bytes()==subprocess.check_output(['git','show',commit+':'+fn]),'PARENT_CHANGED:'+fn
+          assert pathlib.Path('hcraf_stage1am_f3_p4_parent_evidence_audit_v0525_sources.zip').read_bytes()==subprocess.check_output(['git','show','HEAD:hcraf_stage1am_f3_p4_parent_evidence_audit_v0525_sources.zip']),'UNCOMMITTED_AUDIT_SOURCE'
+          PY
+      - name: Verify original GitHub parent runs and Artifact digests
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/p4_p2_v0525_audit/PARENT_GITHUB_PROVENANCE.json
+          import json,os,urllib.request
+          assert os.environ['GITHUB_REPOSITORY']=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          root='https://api.github.com/repos/'+os.environ['GITHUB_REPOSITORY']
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P4-v0525'}
+          def get(path):
+            with urllib.request.urlopen(urllib.request.Request(root+path,headers=h),timeout=50) as r:return json.load(r)
+          expected=[('44378629623','059c6485957450d2ffcf7bb2b2a46656bb6088e2','.github/workflows/hcraf-stage1am-f3-p4-prospective-prereg-lock-v0.52.4.yml','hcraf-f3-p4-prospective-prereg-v0524-run-44378629623',14462730554,'sha256:9e7e5a66a39ba385f1070471a0b82ae05a51b22c9dd5298f40221e2f673f4aa6'),('44354340404','079cb06ae8cdef07abf6df3b2ff34b0607113b2a','.github/workflows/hcraf-stage1am-f3-queue-pressure-feasibility-dev-v0.52.3.yml','hcraf-f3-queue-pressure-feasibility-v0523-run-44354340404',14452244240,'sha256:a987ee25118bc3de9c4b341c66e036f2c34783f3390ad7cb97666c8214aca8b2')]
+          passes=[]
+          for rid,sha,workflow,name,artifact_id,digest in expected:
+            run=get('/actions/runs/'+rid);assert run['status']=='completed' and run['conclusion']=='success' and run['head_sha']==sha and run['path']==workflow,'PARENT_RUN_MISMATCH_'+rid
+            arts=get('/actions/runs/'+rid+'/artifacts?per_page=100')['artifacts']
+            matches=[a for a in arts if a['name']==name and a['id']==artifact_id and a.get('digest')==digest and not a['expired']]
+            assert len(matches)==1,'PARENT_ARTIFACT_MISMATCH_'+rid
+            passes.append({'run_id':rid,'commit':sha,'artifact_id':artifact_id,'sha256':digest,'status':'PASS'})
+          print(json.dumps({'result':'PASS_LOCKED_GITHUB_PARENTS','parents':passes},indent=2))
+          PY
+      - name: Download P3 evidence directly from GitHub
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-queue-pressure-feasibility-v0523-run-44354340404
+          run-id: 44354340404
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/p4_p2_v0525_audit/P3_PARENT_EVIDENCE
+      - name: Download P4 lock directly from GitHub
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-p4-prospective-prereg-v0524-run-44378629623
+          run-id: 44378629623
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/p4_p2_v0525_audit/P4_LOCK_EVIDENCE
+      - name: Securely verify exact audit source members
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/p4_p2_v0525_audit/SOURCE_EXTRACTION.log
+          import pathlib,zipfile,json,hashlib,stat
+          fn='hcraf_stage1am_f3_p4_parent_evidence_audit_v0525_sources.zip'
+          with zipfile.ZipFile(fn) as z:
+              assert z.testzip() is None
+              names=z.namelist(); assert len(names)==len(set(names))
+              mf='HCRAF_F3_P4_P2_V0525_SOURCE_SHA256.json'
+              m=json.loads(z.read(mf)); assert m['stage']=='P4_P2_v0.52.5_EVIDENCE_AUDIT_TECHNICAL_ONLY'
+              assert set(names)==set(m['source_files'])|{mf}
+              todo=[]
+              for n in names:
+                  p=pathlib.PurePosixPath(n)
+                  assert n and not n.startswith('/') and '..' not in p.parts and '\\' not in n
+                  assert not stat.S_ISLNK(z.getinfo(n).external_attr>>16)
+                  data=z.read(n)
+                  if n!=mf:assert hashlib.sha256(data).hexdigest()==m['source_files'][n],'BAD_SHA_'+n
+                  target=pathlib.Path(n)
+                  assert not target.exists(),'REFUSE_OVERWRITE_'+n
+                  todo.append((target,data))
+              for target,data in todo:target.parent.mkdir(parents=True,exist_ok=True);target.write_bytes(data)
+          print('PASS_SECURE_SOURCE_EXTRACT',len(todo))
+          PY
+      - name: Test strictly read-only event extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_p4_parent_evidence_v0525.py' -v \
+            > episode_output/p4_p2_v0525_audit/UNIT_TESTS.log 2>&1
+          tail -8 episode_output/p4_p2_v0525_audit/UNIT_TESTS.log
+      - name: Inspect actual P3 witnesses and source contracts without simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/audit_p4_parent_evidence_v0525.py \
+            --evidence episode_output/p4_p2_v0525_audit/P3_PARENT_EVIDENCE \
+            --p4-lock episode_output/p4_p2_v0525_audit/P4_LOCK_EVIDENCE \
+            --output episode_output/p4_p2_v0525_audit \
+             > episode_output/p4_p2_v0525_audit/TECHNICAL_AUDIT.log 2>&1
+          tail -35 episode_output/p4_p2_v0525_audit/TECHNICAL_AUDIT.log
+      - name: Always capture failure diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set -u
+          mkdir -p episode_output/p4_p2_v0525_audit
+          find episode_output/p4_p2_v0525_audit -maxdepth 6 -type f | sort > episode_output/p4_p2_v0525_audit/OUTPUT_INVENTORY.txt
+          printf 'run_id=%s\ncommit=%s\nno_new_simulations=true\nno_training_or_heldout=true\n' "$GITHUB_RUN_ID" "$GITHUB_SHA" > episode_output/p4_p2_v0525_audit/SCIENCE_GUARDS.txt
+      - name: Upload evidence audit or failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p4-parent-evidence-audit-v0525-run-${{ github.run_id }}
+          path: |
+            episode_output/p4_p2_v0525_audit/PARENT_GITHUB_PROVENANCE.json
+            episode_output/p4_p2_v0525_audit/P4_LOCK_EVIDENCE/prereg_lock_receipt.json
+            episode_output/p4_p2_v0525_audit/P4_PARENT_EVIDENCE_AUDIT.json
+            episode_output/p4_p2_v0525_audit/AUDIT_SUMMARY.json
+            episode_output/p4_p2_v0525_audit/*.log
+            episode_output/p4_p2_v0525_audit/*.txt
+          retention-days: 30
+          if-no-files-found: error
