@@ -1,0 +1,266 @@
+name: "HCRAF F3 P4 Prospective DEV Seed 23101 (v0.52.8 P5)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  verify-prospective-development-seed-23101-twelve-factorial-cases:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 355
+    env:
+      V0526_SOURCE_SHA256: "bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63"
+      V0527_SOURCE_SHA256: "ed810ed57656c1d977a100f34f727a38acc2d8c9ce01fad753bf4c9d4875abdc"
+      V0528_SOURCE_SHA256: "02e37199013bc26acf705db17811e7e175f0b13a3353bb8b34e11961dc65ab58"
+    steps:
+      - name: Install ns3 ndnSIM dependencies with bounded network retries
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          : > /tmp/p4p5_apt_update.log
+          : > /tmp/p4p5_apt_install.log
+          # Run 44474934459 fetched 266 MB but failed on transient HTTP
+          # connections to archive.ubuntu.com and security.ubuntu.com.
+          # Preserve APT's partial download cache across attempts.
+          sed -i '/focal-backports/d' /etc/apt/sources.list
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          for attempt in 1 2 3; do
+            if [ "$attempt" -eq 2 ]; then
+              sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            elif [ "$attempt" -eq 3 ]; then
+              sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            fi
+            echo "APT_UPDATE_ATTEMPT=$attempt" >> /tmp/p4p5_apt_update.log
+            apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 update >> /tmp/p4p5_apt_update.log 2>&1 || true
+            echo "APT_INSTALL_ATTEMPT=$attempt" >> /tmp/p4p5_apt_install.log
+            if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 install -y --no-install-recommends \
+              git curl ca-certificates build-essential \
+              python3 python3-dev python3-setuptools python3-pip python3-pytest \
+              pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+              libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+              libevent-dev graphviz doxygen time >> /tmp/p4p5_apt_install.log 2>&1; then
+              echo "PASS_APT_DEPENDENCIES_ATTEMPT=$attempt" >> /tmp/p4p5_apt_install.log
+              exit 0
+            fi
+            echo "APT_ATTEMPT_FAILED=$attempt; preserving cached .deb files" >> /tmp/p4p5_apt_install.log
+          done
+          echo 'FAIL_ALL_THREE_APT_NETWORK_ATTEMPTS; ZERO_SIMULATIONS' >> /tmp/p4p5_apt_install.log
+          tail -60 /tmp/p4p5_apt_install.log
+          exit 1
+
+      - name: Checkout complete ancestry
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize safe diagnostics and scientific fence
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v0528_preflight
+          echo 'v0.52.8: twelve prospective DEVELOPMENT cases, single seed 23101; no official F3 labels/PR-AUC/training; Validation and Test forbidden' > episode_output/v0528_preflight/START_HERE.txt
+
+      - name: Verify P4P4 GitHub parent commit and exact immutable artifact
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > episode_output/v0528_preflight/GITHUB_PARENT_PROVENANCE.log 2>&1
+          import json,os,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']; tok=os.environ['GH_TOKEN']; assert tok
+          h={'Authorization':'Bearer '+tok,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P4P5-v0528'}
+          def get(url):
+              with urllib.request.urlopen(urllib.request.Request(url,headers=h),timeout=60) as r:
+                  return json.load(r)
+          base=f'https://api.github.com/repos/{repo}/actions/runs/44506597468'
+          run=get(base)
+          sha='d552c88898fcd81421d106cafcf9a427de7d5010'
+          assert run['conclusion']=='success' and run['head_sha']==sha, 'P4P4_PARENT_NOT_THE_VERIFIED_RUN'
+          assert run['path'].endswith('/hcraf-stage1am-f3-p4-route-diversity-dev-v0.52.7.yml'), 'WRONG_P4P4_WORKFLOW'
+          subprocess.check_call(['git','merge-base','--is-ancestor',sha,'HEAD'])
+          artifact=get(f'https://api.github.com/repos/{repo}/actions/artifacts/14522643049')
+          assert artifact['name']=='hcraf-f3-p4-route-diversity-dev-v0527-run-44506597468'
+          assert not artifact['expired'] and artifact['digest']=='sha256:879f1ae307f21f62c53830cfbef33f434e92de258d28075ae8b5166255e222a5'
+          assert artifact.get('workflow_run',{}).get('id')==44506597468
+          print('PASS_PINNED_P4P4_PARENT_GITHUB_RUN_AND_ARTIFACT')
+          print('P4 DEVELOPMENT seed 23101 ONLY; validation/test and all official F3 releases prohibited.')
+          PY
+          cat episode_output/v0528_preflight/GITHUB_PARENT_PROVENANCE.log
+
+      - name: Retrieve v0.52.0 locked historical plan receipt
+        id: receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          run-id: "43567814962"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/v0526_preflight/lock_artifact
+
+      - name: Verify whole source ZIP ancestry and restore isolated prospective executor
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v0528_preflight/SOURCE_RESTORE_AND_HASH_GATES.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          old='hcraf_stage1am_f3_p4_physical_mapping_dev_v0526_sources.zip'
+          new='hcraf_stage1am_f3_p4_route_diversity_dev_v0527_sources.zip'
+          prospective='hcraf_stage1am_f3_p4_prospective_dev_v0528_sources.zip'
+          helper='hcraf/episode/scripts/prepare_stage1am_f3_p4_physical_mapping_v0526.py'
+          old_m='HCRAF_F3_P4_PHYSICAL_MAPPING_V0526_SOURCE_SHA256.json'
+          new_m='HCRAF_F3_P4_ROUTE_DIVERSITY_V0527_SOURCE_SHA256.json'
+          prospective_m='HCRAF_F3_P4_PROSPECTIVE_DEV_V0528_SOURCE_SHA256.json'
+          def checked_committed(name,expected):
+              raw=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==expected, 'ROOT_ZIP_SHA_CHANGED:'+name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==raw, 'SOURCE_ZIP_NOT_COMMITTED:'+name
+              return raw
+          def checked_archive(raw,manifest):
+              with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                  assert z.testzip() is None, 'BAD_ZIP_CRC'
+                  names=z.namelist()
+                  assert len(names)==len(set(names)), 'DUPLICATE_ARCHIVE_ENTRY'
+                  for name in names:
+                      path=pathlib.PurePosixPath(name)
+                      assert name and not name.startswith('/') and '..' not in path.parts and '\\' not in name
+                      assert not stat.S_ISLNK(z.getinfo(name).external_attr>>16)
+                  info=json.loads(z.read(manifest))
+                  assert set(names)==set(info['files'])|{manifest}, 'ZIP_MANIFEST_MEMBER_MISMATCH'
+                  for name,digest in info['files'].items():
+                      assert hashlib.sha256(z.read(name)).hexdigest()==digest, 'FILE_SHA_CHANGED:'+name
+                  files={n:z.read(n) for n in info['files']}
+              return info,files
+          old_raw=checked_committed(old,os.environ['V0526_SOURCE_SHA256'])
+          old_info,old_files=checked_archive(old_raw,old_m)
+          assert helper in old_files
+          exec(compile(old_files[helper],helper,'exec'),{'__name__':'__main__'})
+          new_raw=checked_committed(new,os.environ['V0527_SOURCE_SHA256'])
+          m,files=checked_archive(new_raw,new_m)
+          assert m['stage']=='v0.52.7_P4_P4_DEV_ROUTE_DIVERSITY_HISTORICAL_FIXTURES_ONLY'
+          assert m['parent_p4_p3_run_id']=='44458755203'
+          assert m['simulations_planned']==8 and m['independent_P4_seeds_consumed']==0
+          assert m['original_v0520_prereg_unchanged'] and m['original_v0524_prereg_unchanged']
+          for k,v in {'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,
+                      'training_ready':False,'heldout_release_authorized':False}.items():
+              assert m[k] is v, 'NEW_MANIFEST_SCIENCE_LOCK_BROKEN:'+k
+          assert all(not pathlib.Path(n).exists() for n in files), 'REFUSE_OVERWRITE_V0527_EXISTING_SOURCE'
+          for n,data in files.items():
+              path=pathlib.Path(n)
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_bytes(data)
+          pro_raw=checked_committed(prospective,os.environ['V0528_SOURCE_SHA256'])
+          p,prospective_files=checked_archive(pro_raw,prospective_m)
+          assert p['stage']=='v0.52.8_P4_P5_PROSPECTIVE_ONE_DEVELOPMENT_SEED_ONLY'
+          assert p['parent_p4_p4_run_id']=='44506597468'
+          assert p['parent_p4_p4_head_sha']=='d552c88898fcd81421d106cafcf9a427de7d5010'
+          assert p['parent_p4_p4_artifact_id']=='14522643049'
+          assert p['parent_p4_p4_artifact_sha256']=='879f1ae307f21f62c53830cfbef33f434e92de258d28075ae8b5166255e222a5'
+          assert p['upstream_v0524_design_unchanged'] and p['upstream_v0520_design_unchanged']
+          assert p['prospective_seed_23101_development_only'] and p['simulations_planned']==12
+          assert not p['prospective_remaining_development_seeds_authorized']
+          assert not p['prospective_validation_seeds_authorized']
+          assert not p['prospective_heldout_seeds_authorized']
+          assert p['official_F3_labels_constructed']==0 and p['F3_PR_AUC_computed'] is False
+          for k,v in {'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+                      'GO_FREEZE':False,'training_ready':False,
+                      'heldout_release_authorized':False}.items():
+              assert p[k] is v, 'PROSPECTIVE_MANIFEST_SCIENCE_LOCK_BROKEN:'+k
+          assert all(not pathlib.Path(n).exists() for n in prospective_files), 'REFUSE_OVERWRITE_V0528_SOURCE'
+          for n,data in prospective_files.items():
+              path=pathlib.Path(n)
+              path.parent.mkdir(parents=True,exist_ok=True)
+              path.write_bytes(data)
+          print('PASS_V0526_V0527_V0528_FULL_SOURCE_ZIP_PREIMAGES_PER_FILE_HASH_AND_SCIENCE_LOCKS')
+          PY
+          cat episode_output/v0528_preflight/SOURCE_RESTORE_AND_HASH_GATES.log
+
+      - name: Run locked-schedule, split, no-leak and negative-control unit tests
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover \
+            -s hcraf/episode/tests -p 'test_stage1am_f3_queue_telemetry_smoke_v0522.py' -v \
+            > episode_output/v0528_preflight/UNIT_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover \
+            -s hcraf/episode/tests -p 'test_stage1am_f3_queue_pressure_feasibility_v0523.py' -v \
+            >> episode_output/v0528_preflight/UNIT_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover \
+            -s hcraf/episode/tests -p 'test_stage1am_f3_p4_physical_mapping_v0526.py' -v \
+            >> episode_output/v0528_preflight/UNIT_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover \
+            -s hcraf/episode/tests -p 'test_stage1am_f3_p4_route_diversity_dev_v0527.py' -v \
+            >> episode_output/v0528_preflight/UNIT_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover \
+            -s hcraf/episode/tests -p 'test_stage1am_f3_p4_prospective_dev_v0528.py' -v \
+            >> episode_output/v0528_preflight/UNIT_TESTS.log 2>&1
+          python3 hcraf/episode/scripts/run_stage1am_f3_p4_prospective_dev_seed_v0528.py \
+            --preflight-only > episode_output/v0528_preflight/TWELVE_RUN_DEVELOPMENT_PLAN.json
+
+      - name: Build isolated prospective v0.52.8 C++ model with pinned ndnSIM ancestry
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_p4_prospective_dev_v0528.sh \
+            > episode_output/v0528_preflight/CPP_BUILD.log 2>&1
+          tail -12 episode_output/v0528_preflight/CPP_BUILD.log
+
+      - name: Run twelve prospective development cases for seed 23101 only
+        id: simulate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/run_stage1am_f3_p4_prospective_dev_seed_v0528.py \
+            > episode_output/v0528_preflight/TWELVE_PROSPECTIVE_SIMULATIONS_AND_AUDITS.log 2>&1
+          tail -55 episode_output/v0528_preflight/TWELVE_PROSPECTIVE_SIMULATIONS_AND_AUDITS.log
+
+      - name: Always save science lock status and failure diagnostics
+        if: always()
+        id: diagnose
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          RESTORE: ${{ steps.restore.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          SIMULATE: ${{ steps.simulate.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v0528_preflight
+          {
+            echo 'v0.52.8 P4/P5: PROSPECTIVE DEVELOPMENT SEED 23101 ONLY; 12 factorial engineering/readiness cases'
+            echo "run_id=${GITHUB_RUN_ID:-unknown} head_sha=${GITHUB_SHA:-unknown}"
+            echo "parent=$PARENT restore=$RESTORE tests=$TESTS build=$BUILD simulate=$SIMULATE"
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'Only one development seed; 3 remaining dev seeds unreleased; Validation/Test never executed; 0 official labels; 0 models; no Stage1AO/NSGA-III'
+          } > episode_output/v0528_preflight/SCIENCE_LOCKS_AND_STEP_OUTCOMES.txt
+          find episode_output -maxdepth 9 -type f | sort > episode_output/v0528_preflight/OUTPUT_INVENTORY.txt
+          cp /tmp/p4p5_apt_update.log episode_output/v0528_preflight/apt_update.log 2>/dev/null || true
+          cp /tmp/p4p5_apt_install.log episode_output/v0528_preflight/apt_install.log 2>/dev/null || true
+
+      - name: Always upload prospective physical witnesses and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p4-prospective-dev-seed-v0528-run-${{ github.run_id }}
+          path: |
+            episode_output/v0528_preflight/
+            episode_output/stage1am_f3_p4_prospective_dev_seed_v0528/
+          if-no-files-found: error
+          retention-days: 30
