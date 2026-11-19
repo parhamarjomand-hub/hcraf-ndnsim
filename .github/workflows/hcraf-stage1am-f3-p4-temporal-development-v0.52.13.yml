@@ -1,0 +1,254 @@
+name: "HCRAF F3 P4 Temporal DEV 96 (v0.52.13 P10)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  execute-frozen-p9-temporal-development-only-eight-seeds:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 355
+    env:
+      V0526_SOURCE_SHA256: "bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63"
+      V0527_SOURCE_SHA256: "ed810ed57656c1d977a100f34f727a38acc2d8c9ce01fad753bf4c9d4875abdc"
+      V0528_SOURCE_SHA256: "02e37199013bc26acf705db17811e7e175f0b13a3353bb8b34e11961dc65ab58"
+      V0529_SOURCE_SHA256: "6689c538befd0d74cdc305c5d12bcca6f2e594559d54e44a0c247e9c87f95ece"
+      V05212_SOURCE_SHA256: "050ca15feab2336df4af4607777407bb832da1619bf05bc48a03118a8089985e"
+      V05213_SOURCE_SHA256: "c4828a9828e372e65f46ffb20ae1b10521a64472418aa420bac90985c5091899"
+    steps:
+      - name: Install pinned ns3 ndnSIM dependencies with bounded retries
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          : > /tmp/p4p10_apt_update.log
+          : > /tmp/p4p10_apt_install.log
+          sed -i '/focal-backports/d' /etc/apt/sources.list
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          for attempt in 1 2 3; do
+            if [ "$attempt" -eq 2 ]; then
+              sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            elif [ "$attempt" -eq 3 ]; then
+              sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            fi
+            apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 update >> /tmp/p4p10_apt_update.log 2>&1 || true
+            if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 install -y --no-install-recommends \
+              git curl ca-certificates build-essential \
+              python3 python3-dev python3-setuptools python3-pip python3-pytest \
+              pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+              libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+              libevent-dev graphviz doxygen time >> /tmp/p4p10_apt_install.log 2>&1; then
+              echo "PASS_APT_DEPENDENCIES_ATTEMPT=$attempt" >> /tmp/p4p10_apt_install.log
+              exit 0
+            fi
+          done
+          tail -50 /tmp/p4p10_apt_install.log
+          exit 1
+
+      - name: Checkout complete Git ancestry
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize zero-execution guard and diagnostics
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05213_preflight
+          echo 'P10: exactly 96 P9-frozen DEVELOPMENT simulations, 8 new seeds, zero protected simulations; no official labels/models/PR-AUC.' > episode_output/v05213_preflight/START_HERE.txt
+
+      - name: Authenticate GitHub P9 parent commit artifact digest and ancestry
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > episode_output/v05213_preflight/PINNED_P9_GITHUB_PARENT.log 2>&1
+          import json,os,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          tok=os.environ['GH_TOKEN'];assert tok
+          head={'Authorization':'Bearer '+tok,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P4P10-v05213'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=head),timeout=60) as r:
+                  return json.load(r)
+          run=get('/actions/runs/44586680702')
+          commit='9a83987db3b6e1c279f324e1f0a3b328f3ad7518'
+          assert run['id']==44586680702 and run['status']=='completed' and run['conclusion']=='success'
+          assert run['head_sha']==commit and run['path'].endswith('/hcraf-stage1am-f3-p4-temporal-prereg-v0.52.12.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+          artifact=get('/actions/artifacts/14561098125')
+          assert artifact['name']=='hcraf-f3-p4-temporal-prereg-v05212-run-44586680702'
+          assert artifact['digest']=='sha256:9b261421ec146ef8ea0d96e8a053b61526bb2b6b2a085ba86fcca97498332d94'
+          assert not artifact['expired'] and artifact.get('workflow_run',{}).get('id')==44586680702
+          print('PASS_PINNED_P9_RUN_COMMIT_ARTIFACT_ANCESTRY')
+          PY
+          cat episode_output/v05213_preflight/PINNED_P9_GITHUB_PARENT.log
+
+      - name: Retrieve unchanged v0.52.0 historical preregistration receipt
+        id: receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          run-id: "43567814962"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/v0526_preflight/lock_artifact
+
+      - name: Restore every authenticated ancestor and P9 P10 sources without overwrites
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05213_preflight/SOURCE_AND_PARENT_SHA_GATES.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          old='hcraf_stage1am_f3_p4_physical_mapping_dev_v0526_sources.zip'
+          helper='hcraf/episode/scripts/prepare_stage1am_f3_p4_physical_mapping_v0526.py'
+          old_manifest='HCRAF_F3_P4_PHYSICAL_MAPPING_V0526_SOURCE_SHA256.json'
+          locks={'Congestion':None,'FutureCongestion':None,'F3_ready':False,'GO_FREEZE':False,
+                 'training_ready':False,'heldout_release_authorized':False}
+          def checked(name,expected,manifest):
+              raw=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==expected,'PINNED_SOURCE_ROOT_ZIP_SHA_CHANGED:'+name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE_ROOT_ZIP_NOT_COMMITTED:'+name
+              with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                  assert z.testzip() is None,'SOURCE_ZIP_CRC_FAILURE'
+                  names=z.namelist();assert len(names)==len(set(names)),'DUPLICATE_SOURCE_MEMBER'
+                  m=json.loads(z.read(manifest))
+                  assert set(names)==set(m['files'])|{manifest},'FULL_PER_FILE_MANIFEST_MISMATCH'
+                  for filename,digest in m['files'].items():
+                      path=pathlib.PurePosixPath(filename)
+                      assert filename and not filename.startswith('/') and '..' not in path.parts and '\\' not in filename
+                      assert not stat.S_ISLNK(z.getinfo(filename).external_attr>>16)
+                      assert hashlib.sha256(z.read(filename)).hexdigest()==digest,'FILE_SHA_MISMATCH:'+filename
+                  return m,{filename:z.read(filename) for filename in m['files']}
+          def new_overlay(m,files,label):
+              for k,v in locks.items():assert m[k] is v,label+'_SCIENCE_FENCE:'+k
+              for name in files:
+                  assert name.startswith('hcraf/episode/') and not pathlib.Path(name).exists(),label+'_REFUSE_OVERWRITE:'+name
+              for name,data in files.items():
+                  p=pathlib.Path(name);p.parent.mkdir(parents=True,exist_ok=True);p.write_bytes(data)
+                  if p.suffix=='.sh':p.chmod(0o755)
+              print('PASS_SOURCE_OVERLAY',label,len(files))
+          old_info,old_files=checked(old,os.environ['V0526_SOURCE_SHA256'],old_manifest)
+          assert helper in old_files
+          exec(compile(old_files[helper],helper,'exec'),{'__name__':'__main__'})
+          prior=[('hcraf_stage1am_f3_p4_route_diversity_dev_v0527_sources.zip','V0527_SOURCE_SHA256',
+                  'HCRAF_F3_P4_ROUTE_DIVERSITY_V0527_SOURCE_SHA256.json',
+                  'v0.52.7_P4_P4_DEV_ROUTE_DIVERSITY_HISTORICAL_FIXTURES_ONLY'),
+                 ('hcraf_stage1am_f3_p4_prospective_dev_v0528_sources.zip','V0528_SOURCE_SHA256',
+                  'HCRAF_F3_P4_PROSPECTIVE_DEV_V0528_SOURCE_SHA256.json',
+                  'v0.52.8_P4_P5_PROSPECTIVE_ONE_DEVELOPMENT_SEED_ONLY'),
+                 ('hcraf_stage1am_f3_p4_revised_development_v0529_sources.zip','V0529_SOURCE_SHA256',
+                  'HCRAF_F3_P4_REVISED_DEV_V0529_SOURCE_SHA256.json',
+                  'v0.52.9_P4_P6_REVISED_PROSPECTIVE_NEW_FOUR_DEV_SEEDS'),
+                 ('hcraf_stage1am_f3_p4_temporal_prereg_v05212_sources.zip','V05212_SOURCE_SHA256',
+                  'HCRAF_F3_P4_TEMPORAL_PREREG_V05212_SOURCE_SHA256.json',
+                  'v0.52.12_P4_P9_TEMPORAL_288_PRE_REGISTERED_DESIGN_ONLY'),
+                 ('hcraf_stage1am_f3_p4_temporal_dev_v05213_sources.zip','V05213_SOURCE_SHA256',
+                  'HCRAF_F3_P4_TEMPORAL_DEV_V05213_SOURCE_SHA256.json',
+                  'v0.52.13_P4_P10_TEMPORAL_96_DEVELOPMENT_ONLY')]
+          for name,sha_var,manifest,stage in prior:
+              m,files=checked(name,os.environ[sha_var],manifest)
+              assert m['stage']==stage,'UNEXPECTED_STAGE:'+name
+              if 'v05212' in name:
+                  assert m['parent_run_id']==44581661928 and m['registered_conditions']==288
+                  assert m['new_simulations']==0 and m['validation_test_executable_now'] is False
+                  assert m['original_v0529_NO_GO_immutable'] is True
+                  assert len([n for n in files if n.endswith('.csv')])>=17
+              if 'v05213' in name:
+                  assert m['parent_p9_run_id']==44586680702
+                  assert m['parent_p9_commit']=='9a83987db3b6e1c279f324e1f0a3b328f3ad7518'
+                  assert m['parent_p9_artifact_id']==14561098125
+                  assert m['parent_p9_artifact_sha256']=='9b261421ec146ef8ea0d96e8a053b61526bb2b6b2a085ba86fcca97498332d94'
+                  assert m['authorized_dev_simulations']==96 and m['eligible_seed_blocks']==list(range(23301,23309))
+                  assert m['validation_simulations_authorized']==m['heldout_simulations_authorized']==0
+                  assert m['official_F3_labels_constructed']==0 and m['F3_PR_AUC_computed'] is False
+                  assert m['all_288_conditions_executable'] is False
+              new_overlay(m,files,name)
+          print('PASS_ALL_PARENT_ZIPS_GIT_PREIMAGES_CRC_SHA_EVERY_FILE_SCIENCE_LOCKS')
+          PY
+          tail -35 episode_output/v05213_preflight/SOURCE_AND_PARENT_SHA_GATES.log
+
+      - name: Independently test P9 locks P10 anti leakage and raw archive reconstruction
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover \
+            -s hcraf/episode/tests -p 'test_stage1am_f3_p4_temporal_lock_v05212.py' -v \
+            > episode_output/v05213_preflight/UNIT_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover \
+            -s hcraf/episode/tests -p 'test_stage1am_f3_p4_temporal_dev_v05213.py' -v \
+            >> episode_output/v05213_preflight/UNIT_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 hcraf/episode/scripts/run_stage1am_f3_p4_temporal_dev_v05213.py --preflight-only \
+            > episode_output/v05213_preflight/P10_96_DEV_ZERO_EXECUTION_PREFLIGHT.json
+          tail -24 episode_output/v05213_preflight/UNIT_TESTS.log
+
+      - name: Build separate v0.52.13 temporal C++ on historically pinned ndnSIM
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_p4_temporal_dev_v05213.sh \
+            > episode_output/v05213_preflight/CPP_BUILD.log 2>&1
+          tail -20 episode_output/v05213_preflight/CPP_BUILD.log
+
+      - name: Execute and audit eight P9 frozen development seeds 96 physical cases
+        id: simulate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/run_stage1am_f3_p4_temporal_dev_v05213.py \
+            > episode_output/v05213_preflight/96_TEMPORAL_DEVELOPMENT_SIMULATIONS.log 2>&1
+          tail -35 episode_output/v05213_preflight/96_TEMPORAL_DEVELOPMENT_SIMULATIONS.log
+
+      - name: Always attest science locks and preserve bounded diagnostics
+        if: always()
+        id: diagnose
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          RESTORE: ${{ steps.restore.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          SIMULATE: ${{ steps.simulate.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v05213_preflight
+          {
+            echo "P10 run=${GITHUB_RUN_ID:-unknown} commit=${GITHUB_SHA:-unknown}"
+            echo "parent=$PARENT restore=$RESTORE tests=$TESTS build=$BUILD simulate=$SIMULATE"
+            echo 'P9 temporal CSV immutable; 96 DEVELOPMENT maximum; no VALIDATION or HELDOUT simulations; no official F3 labels, training, PR-AUC'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'Stage 1AO and NSGA-III forbidden'
+          } > episode_output/v05213_preflight/SCIENCE_LOCKS_AND_STEP_OUTCOMES.txt
+          find episode_output/v05213_preflight episode_output/stage1am_f3_p4_temporal_dev_v05213 \
+            -maxdepth 2 -type f 2>/dev/null | sort \
+            > episode_output/v05213_preflight/OUTPUT_INVENTORY.txt || true
+          cp /tmp/p4p10_apt_update.log episode_output/v05213_preflight/apt_update.log 2>/dev/null || true
+          cp /tmp/p4p10_apt_install.log episode_output/v05213_preflight/apt_install.log 2>/dev/null || true
+
+      - name: Always upload full recoverable per seed raw ZIPs and small science audits
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p4-temporal-dev-v05213-run-${{ github.run_id }}
+          path: |
+            episode_output/v05213_preflight/
+            episode_output/stage1am_f3_p4_temporal_dev_v05213/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
