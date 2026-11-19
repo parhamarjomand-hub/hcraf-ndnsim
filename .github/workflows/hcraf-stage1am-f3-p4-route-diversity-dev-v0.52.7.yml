@@ -16,18 +16,46 @@ jobs:
       V0526_SOURCE_SHA256: "bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63"
       V0527_SOURCE_SHA256: "ed810ed57656c1d977a100f34f727a38acc2d8c9ce01fad753bf4c9d4875abdc"
     steps:
-      - name: Install same ns3 ndnSIM build dependencies as successful P4P3
+      - name: Install ns3 ndnSIM dependencies with bounded network retries
         id: deps
         shell: bash
         run: |
           set -euo pipefail
           export DEBIAN_FRONTEND=noninteractive
-          apt-get update > /tmp/p4p4_apt_update.log 2>&1
-          apt-get install -y --no-install-recommends git curl ca-certificates build-essential \
-            python3 python3-dev python3-setuptools python3-pip python3-pytest \
-            pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
-            libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
-            libevent-dev graphviz doxygen time > /tmp/p4p4_apt_install.log 2>&1
+          : > /tmp/p4p4_apt_update.log
+          : > /tmp/p4p4_apt_install.log
+          # Run 44474934459 fetched 266 MB but failed on transient HTTP
+          # connections to archive.ubuntu.com and security.ubuntu.com.
+          # Preserve APT's partial download cache across attempts.
+          sed -i '/focal-backports/d' /etc/apt/sources.list
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          for attempt in 1 2 3; do
+            if [ "$attempt" -eq 2 ]; then
+              sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            elif [ "$attempt" -eq 3 ]; then
+              sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            fi
+            echo "APT_UPDATE_ATTEMPT=$attempt" >> /tmp/p4p4_apt_update.log
+            apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 update >> /tmp/p4p4_apt_update.log 2>&1 || true
+            echo "APT_INSTALL_ATTEMPT=$attempt" >> /tmp/p4p4_apt_install.log
+            if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 install -y --no-install-recommends \
+              git curl ca-certificates build-essential \
+              python3 python3-dev python3-setuptools python3-pip python3-pytest \
+              pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+              libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+              libevent-dev graphviz doxygen time >> /tmp/p4p4_apt_install.log 2>&1; then
+              echo "PASS_APT_DEPENDENCIES_ATTEMPT=$attempt" >> /tmp/p4p4_apt_install.log
+              exit 0
+            fi
+            echo "APT_ATTEMPT_FAILED=$attempt; preserving cached .deb files" >> /tmp/p4p4_apt_install.log
+          done
+          echo 'FAIL_ALL_THREE_APT_NETWORK_ATTEMPTS; ZERO_SIMULATIONS' >> /tmp/p4p4_apt_install.log
+          tail -60 /tmp/p4p4_apt_install.log
+          exit 1
 
       - name: Checkout complete ancestry
         id: checkout
