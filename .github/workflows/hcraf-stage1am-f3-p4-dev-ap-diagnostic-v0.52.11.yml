@@ -1,0 +1,166 @@
+name: "HCRAF F3 P4 DEV AP Time-Control Audit (v0.52.11 P8)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  analyze-only-existing-development-evidence-no-training:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      V05210_SOURCE_SHA256: "3d164d32d5e7dccdc708c389e6179cff9949eedf0bd38f84a348bbe9a0080f96"
+      V05211_SOURCE_SHA256: "1c64ac3c21b76cc72e398231af8cfebddaad47269c2941d55a82294194541653"
+      P4P8_PARENT_ZIP: "/tmp/hcraf-p4p8-parent-run-44579295748.zip"
+    steps:
+      - name: Checkout source history and validate complete parent ancestry
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize immutable science fence and diagnostics directory
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05211_preflight
+          echo 'P4P8 exploratory DEV-only AP; NO_GO v0.52.9 unchanged; 0 simulations, 0 models, no official PR-AUC, Validation/Test forbidden' > episode_output/v05211_preflight/START_HERE.txt
+
+      - name: Authenticate GitHub parent P7 success commit and exact artifact SHA256
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > episode_output/v05211_preflight/GITHUB_P7_PARENT_RECEIPT.log 2>&1
+          import json,os,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          tok=os.environ['GH_TOKEN'];assert tok
+          headers={'Authorization':'Bearer '+tok,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P4P8-v05211'}
+          def get(url):
+              with urllib.request.urlopen(urllib.request.Request(url,headers=headers),timeout=60) as r:return json.load(r)
+          base='https://api.github.com/repos/'+repo
+          parent=get(base+'/actions/runs/44579295748')
+          sha='3bde9e58753982d0cfcd57c5f5b38c2b60ed3622'
+          assert parent['id']==44579295748 and parent['status']=='completed' and parent['conclusion']=='success'
+          assert parent['head_sha']==sha and parent['path'].endswith('/hcraf-stage1am-f3-p4-posthoc-dev-forensic-v0.52.10.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',sha,'HEAD'])
+          art=get(base+'/actions/artifacts/14557443309')
+          assert art['name']=='hcraf-f3-p4-posthoc-dev-forensic-v05210-run-44579295748'
+          assert art['digest']=='sha256:4c8e7d1b065d0d7dcbaadc098c3c21b47b2d3a836ecba7276b8e2ed827e02d0e'
+          assert not art['expired'] and art.get('workflow_run',{}).get('id')==44579295748
+          print('PASS_V05210_GITHUB_RUN_ARTIFACT_AND_FULL_ANCESTRY')
+          PY
+          cat episode_output/v05211_preflight/GITHUB_P7_PARENT_RECEIPT.log
+
+      - name: Verify original P7 and new P8 committed source ZIP SHA and all member SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05211_preflight/BOTH_SOURCE_ZIP_AND_PER_FILE_SHA.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          parents=[('hcraf_stage1am_f3_p4_posthoc_forensic_dev_v05210_sources.zip',
+                    'V05210_SOURCE_SHA256','HCRAF_F3_P4_POSTHOC_FORENSIC_V05210_SOURCE_SHA256.json'),
+                   ('hcraf_stage1am_f3_p4_dev_ap_diagnostic_v05211_sources.zip',
+                    'V05211_SOURCE_SHA256','HCRAF_F3_P4_DEV_AP_DIAGNOSTIC_V05211_SOURCE_SHA256.json')]
+          for basename,key,manifest_name in parents:
+              raw=pathlib.Path(basename).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==os.environ[key], 'SHA_CHANGED:'+basename
+              assert subprocess.check_output(['git','show','HEAD:'+basename])==raw, 'NOT_COMMITTED:'+basename
+              with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                  assert z.testzip() is None
+                  names=z.namelist();assert len(names)==len(set(names))
+                  manifest=json.loads(z.read(manifest_name))
+                  assert set(names)==set(manifest['files'])|{manifest_name}
+                  for n,digest in manifest['files'].items():
+                      p=pathlib.PurePosixPath(n)
+                      assert n and not n.startswith('/') and '..' not in p.parts and '\\' not in n
+                      assert not stat.S_ISLNK(z.getinfo(n).external_attr>>16)
+                      assert hashlib.sha256(z.read(n)).hexdigest()==digest
+                  if 'v05211' in basename:
+                      assert manifest['stage']=='v0.52.11_P4_P8_EXPLORATORY_DEV_AP_TIME_CONTROLS_ONLY'
+                      assert manifest['parent_run_id']==44579295748 and manifest['parent_artifact_id']==14557443309
+                      assert manifest['parent_artifact_sha256']=='4c8e7d1b065d0d7dcbaadc098c3c21b47b2d3a836ecba7276b8e2ed827e02d0e'
+                      assert manifest['new_simulations']==0 and manifest['models_trained']==0 and manifest['official_F3_labels_constructed']==0
+                      assert manifest['original_v0529_NO_GO_immutable'] is True
+                      assert manifest['validation_and_heldout_locked'] is True
+                      for k,v in {'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+                                  'GO_FREEZE':False,'training_ready':False,
+                                  'heldout_release_authorized':False}.items():
+                          assert manifest[k] is v, 'SCIENCE_LOCK_BROKEN:'+k
+                      target=pathlib.Path('episode_output/v05211_executor')
+                      for n in manifest['files']:
+                          path=target/n
+                          assert not path.exists(), 'REFUSE_OVERWRITE_SOURCE'
+                          path.parent.mkdir(parents=True,exist_ok=True)
+                          path.write_bytes(z.read(n))
+                  print('PASS_ARCHIVE_AND_ALL_MEMBER_SHA',basename,len(manifest['files']))
+          PY
+          cat episode_output/v05211_preflight/BOTH_SOURCE_ZIP_AND_PER_FILE_SHA.log
+
+      - name: Retrieve 189 KB P7 GitHub artifact and verify full archive SHA before analysis
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 --retry-delay 3 \
+            --connect-timeout 25 --max-time 240 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/14557443309/zip" \
+            --output "${P4P8_PARENT_ZIP}"
+          echo '4c8e7d1b065d0d7dcbaadc098c3c21b47b2d3a836ecba7276b8e2ed827e02d0e  /tmp/hcraf-p4p8-parent-run-44579295748.zip' | sha256sum --check - \
+            > episode_output/v05211_preflight/PARENT_SHA256_GATE.log
+          cat episode_output/v05211_preflight/PARENT_SHA256_GATE.log
+
+      - name: Test AP tie behavior future prohibition no training and locked seeds
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONPATH=episode_output/v05211_executor/hcraf/episode/scripts \
+            python3 -m unittest discover \
+              -s episode_output/v05211_executor/hcraf/episode/tests \
+              -p 'test_stage1am_f3_p4_dev_ap_v05211.py' -v \
+              > episode_output/v05211_preflight/NO_LEAK_FIXED_SCORE_AP_TESTS.log 2>&1
+          tail -16 episode_output/v05211_preflight/NO_LEAK_FIXED_SCORE_AP_TESTS.log
+
+      - name: Measure descriptive AP across all DEV strata and each independent seed without fitting models
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 \
+            episode_output/v05211_executor/hcraf/episode/scripts/analyze_stage1am_f3_p4_dev_ap_v05211.py \
+            --parent-zip "${P4P8_PARENT_ZIP}" \
+            --output episode_output/stage1am_f3_p4_dev_ap_diagnostic_v05211 \
+            > episode_output/v05211_preflight/DEV_AP_ONLY_NOT_OFFICIAL_F3.log 2>&1
+          cat episode_output/v05211_preflight/DEV_AP_ONLY_NOT_OFFICIAL_F3.log
+
+      - name: Always record the protected science status
+        if: always()
+        shell: bash
+        run: |
+          set -eu
+          mkdir -p episode_output/v05211_preflight
+          {
+            echo 'POSTHOC EXPLORATORY DEVELOPMENT AP ONLY; no model training; no official F3 PR-AUC'
+            echo "run_id=${GITHUB_RUN_ID} commit=${GITHUB_SHA}"
+            echo 'v0.52.9 preregistered NO_GO retained; Validation/Test NOT released'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'No Stage 1AO, no NSGA-III'
+          } > episode_output/v05211_preflight/SCIENCE_FENCE.txt
+
+      - name: Always upload small scientific reports derived hashes and failure diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p4-dev-ap-time-control-v05211-run-${{ github.run_id }}
+          path: |
+            episode_output/v05211_preflight/
+            episode_output/stage1am_f3_p4_dev_ap_diagnostic_v05211/
+          if-no-files-found: error
+          retention-days: 30
