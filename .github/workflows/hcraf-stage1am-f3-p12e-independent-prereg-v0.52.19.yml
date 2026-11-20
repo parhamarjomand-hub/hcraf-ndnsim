@@ -1,0 +1,187 @@
+name: "HCRAF F3 P12E Independent Dataset Prospective Prereg (v0.52.19)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  authenticate-and-preregister-168-future-conditions-with-zero-simulations:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      V05219_SOURCE_SHA256: "72e46581c8124e83372fb84f5bf014637d44d1c61f990cb8d0582f04de14b96f"
+      P12D_PARENT_SOURCE_SHA256: "e4cf3e0b0784763746c3a690a9f716f70ecb27a5a88d9ac2a31fb798fa3992fb"
+      P12C_PARENT_SOURCE_SHA256: "3ca589f68f211a6c33b05ed89c955b1041aa5ad6db2dfb338586a7be9915aa84"
+    steps:
+      - name: Checkout the committed complete Git history
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize P12E zero-physical-execution evidence
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05219_preflight
+          echo 'P12E prospective preregistration: 84 SHA-frozen schedules; 168 future cases; 0 simulator runs; 0 training; 0 Validation/Heldout release.' > episode_output/v05219_preflight/START_HERE.txt
+
+      - name: Authenticate P12D successful physical parent GitHub run and artifact
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05219_preflight/P12D_GITHUB_PARENT_AUTHENTICATION.log 2>&1
+          import hashlib,json,os,pathlib,subprocess,urllib.request
+          subprocess.check_call(['git','config','--global','--add','safe.directory',os.getcwd()])
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12E-PREREG-v05219'}
+          def get(resource):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+resource,headers=h)
+              with urllib.request.urlopen(req,timeout=45) as response:return json.load(response)
+          parent=get('/actions/runs/44729383064')
+          commit='eabb00156fc5a0f421ed9e7505afe6f1087d8b2d'
+          assert parent['id']==44729383064 and parent['status']=='completed'
+          assert parent['conclusion']=='success' and parent['head_sha']==commit
+          assert parent['path'].endswith('/hcraf-stage1am-f3-p12-tailprobe-physical-v0.52.18.yml')
+          artifact=get('/actions/artifacts/14627828496')
+          assert artifact['name']=='hcraf-f3-p12d-tailprobe-physical-v05218-run-44729383064'
+          assert artifact['digest']=='sha256:d4e4540c8fcd0074725180666ac9f66e397f93f5bc5a5801cc5b0bbbee7ea3a1'
+          assert not artifact['expired'] and artifact.get('workflow_run',{}).get('id')==44729383064
+          for ancestor in ('079cb06ae8cdef07abf6df3b2ff34b0607113b2a',
+                           '9422921f2b85bc3e022050f87191ea4be85ec29d',commit):
+              subprocess.check_call(['git','merge-base','--is-ancestor',ancestor,'HEAD'])
+          for name,env in (
+            ('hcraf_stage1am_f3_p12_tailprobe_v05218_sources.zip','P12D_PARENT_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12_tail_probe_prereg_v05217_sources.zip','P12C_PARENT_SOURCE_SHA256')):
+              raw=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==os.environ[env]
+              assert subprocess.check_output(['git','show','HEAD:'+name])==raw
+          print('PASS_P12E_GITHUB_P12D_44729383064_ARTIFACT_SHA_PARENT_GIT_ANCESTRY_AND_P12C_SOURCES')
+          PY
+          cat episode_output/v05219_preflight/P12D_GITHUB_PARENT_AUTHENTICATION.log
+
+      - name: Verify exact current source ZIP CRC and every file SHA before isolated extraction
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05219_preflight/P12E_SOURCE_IMMUTABLE_SHA.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          name='hcraf_stage1am_f3_p12e_independent_prereg_v05219_sources.zip'
+          manifest_name='HCRAF_F3_P12E_INDEPENDENT_PREREG_V05219_SOURCE_SHA256.json'
+          raw=pathlib.Path(name).read_bytes()
+          sha=lambda b:hashlib.sha256(b).hexdigest()
+          assert sha(raw)==os.environ['V05219_SOURCE_SHA256'],'WRONG_SOURCE_ZIP_SHA'
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw,'NOT_GIT_COMMITTED_ZIP'
+          dest=pathlib.Path('episode_output/v05219_preflight/verified_sources')
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None,'SOURCE_CRC_FAILED'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'DUPLICATE_ARCHIVE_MEMBER'
+              m=json.loads(z.read(manifest_name))
+              assert set(names)==set(m['files'])|{manifest_name},'WRONG_MEMBER_INVENTORY'
+              assert m['stage']=='v0.52.19_P12_E_PROSPECTIVE_INDEPENDENT_PARTITIONS_PREREG_ONLY'
+              assert m['parent_p12d_run_id']==44729383064
+              assert m['planned_future_cases']==168 and m['locked_schedule_files']==84
+              assert m['authorized_simulations_now']==0 and m['official_F3_labels_constructed']==0
+              assert m['F3_PR_AUC_computed'] is False and m['training_executed'] is False
+              for key,value in {'Congestion':None,'FutureCongestion':None,
+                                'F3_ready':False,'GO_FREEZE':False,
+                                'training_ready':False,'heldout_release_authorized':False}.items():
+                  assert m[key] is value,'SCIENCE_LOCK_CHANGED:'+key
+              expected_manifest_files=dict(m['files'])
+              for path,digest in expected_manifest_files.items():
+                  member=pathlib.PurePosixPath(path)
+                  assert path.startswith('hcraf/episode/') and '..' not in member.parts
+                  assert '\\' not in path and not path.startswith('/')
+                  assert not stat.S_ISLNK(z.getinfo(path).external_attr>>16)
+                  data=z.read(path)
+                  assert sha(data)==digest,'SINGLE_FILE_SHA:'+path
+                  target=dest/path
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  assert not target.exists(),'REFUSE_SOURCE_OVERWRITE'
+                  target.write_bytes(data)
+          print('PASS_P12E_FROZEN_GIT_SOURCE_SHA_CRC_AND',len(expected_manifest_files),'MEMBERS')
+          PY
+          cat episode_output/v05219_preflight/P12E_SOURCE_IMMUTABLE_SHA.log
+
+      - name: Rebuild exact 84 schedule commitments then run prospective prereg tests
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          src=episode_output/v05219_preflight/verified_sources
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$src/hcraf/episode/scripts" \
+            python3 "$src/hcraf/episode/scripts/generate_stage1am_f3_p12e_independent_prereg_v05219.py" \
+            > episode_output/v05219_preflight/P12E_GENERATOR_COMMITMENT_REPLAY.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$src/hcraf/episode/scripts" \
+            python3 -m unittest discover -s "$src/hcraf/episode/tests" \
+            -p 'test_stage1am_f3_p12e_independent_prereg_v05219.py' -v \
+            > episode_output/v05219_preflight/P12E_PREREG_TESTS.log 2>&1
+          tail -20 episode_output/v05219_preflight/P12E_PREREG_TESTS.log
+
+      - name: Save reproducible P12E scientific fence and zero-simulation receipt
+        id: receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib
+          root=pathlib.Path('episode_output/v05219_preflight')
+          source=root/'verified_sources/hcraf/episode/docs/1AM/F3_P12E_INDEPENDENT_PREREG_v0.52.19'
+          commits=json.loads((source/'P12E_FROZEN_SCHEDULE_COMMITMENTS_84_v05219.json').read_text())
+          assert len(commits['schedule_hashes'])==84
+          assert commits['new_simulations']==0 and commits['all_executors_authorized_now'] is False
+          assert commits['validation_data_authorized_now'] is False and commits['heldout_data_authorized_now'] is False
+          report={'status':'PASS_P12E_PROSPECTIVE_FROZEN_PREREG_ONLY',
+                  'parent_run_id':44729383064,
+                  'source_sha256':os.environ['V05219_SOURCE_SHA256'],
+                  'matrix_sha256':commits['matrix_sha256'],
+                  'locked_schedule_files':84,
+                  'future_cases_by_split':commits['locked_case_counts'],
+                  'new_simulations':0,'official_F3_labels_constructed':0,
+                  'training_executed':False,'F3_PR_AUC_computed':False,
+                  **{k:commits[k] for k in ('Congestion','FutureCongestion','F3_ready',
+                                            'GO_FREEZE','training_ready',
+                                            'heldout_release_authorized')}}
+          (root/'P12E_FINAL_PREREG_RECEIPT.json').write_text(
+              json.dumps(report,ensure_ascii=False,indent=2)+'\n')
+          print('PASS_P12E_84_PLANS_168_FUTURE_CASES_NO_SIM_NO_VALIDATION_NO_HELDOUT')
+          PY
+
+      - name: Always preserve scientific lock and technical failure diagnostics
+        if: always()
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          SOURCE: ${{ steps.source.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          RECEIPT: ${{ steps.receipt.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v05219_preflight
+          {
+            echo "P12E GitHub run=${GITHUB_RUN_ID:-unknown} commit=${GITHUB_SHA:-unknown}"
+            echo "parent=$PARENT source=$SOURCE tests=$TESTS receipt=$RECEIPT"
+            echo 'ZERO physical simulations in P12E preregistration; dev, validation and heldout executors unauthorized'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'Stage 1AO and NSGA-III forbidden'
+          } > episode_output/v05219_preflight/SCIENCE_LOCKS_AND_STEPS.txt
+
+      - name: Always upload P12E preregistration SHA evidence and frozen partition plans
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12e-independent-prereg-v05219-run-${{ github.run_id }}
+          path: episode_output/v05219_preflight/
+          if-no-files-found: error
+          compression-level: 6
+          retention-days: 30
