@@ -1,0 +1,166 @@
+name: "HCRAF F3 P12 Counterbalanced Pilot Preregistration (v0.52.15 P12A)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  precommit-randomized-pilot-schedules-no-simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      V05215_SOURCE_SHA256: "47001b31de9c9422c74cfba7910dd0b4f0d8eb64c303f826e7bb352aa0632e83"
+    steps:
+      - name: Checkout full Git ancestry for parent verification
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize independent P12A preregistration evidence
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05215_preflight
+          echo 'P12A randomized time counterbalance design only. 24 P12B PILOT_EXCLUDED cases planned; ZERO simulations, training, official labels, Validation or Heldout.' > episode_output/v05215_preflight/START_HERE_FA.txt
+
+      - name: Authenticate P10 GitHub success exact parent artifact SHA and Git ancestry
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > episode_output/v05215_preflight/P10_PINNED_GITHUB_PARENT.log 2>&1
+          import json,os,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
+                   'User-Agent':'HCRAF-P12A-v05215'}
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=headers)
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          run=get('/actions/runs/44591102013')
+          parent='6bddc98b89cf47d7fca0eccc877916efe0e351a5'
+          assert run['id']==44591102013 and run['status']=='completed' and run['conclusion']=='success'
+          assert run['head_sha']==parent
+          assert run['path'].endswith('/hcraf-stage1am-f3-p4-temporal-development-v0.52.13.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',parent,'HEAD'])
+          art=get('/actions/artifacts/14565749815')
+          assert art['name']=='hcraf-f3-p4-temporal-dev-v05213-run-44591102013'
+          assert not art['expired']
+          assert art['digest']=='sha256:45bfb6c2e65277d8aa00c480f2b5be789445c7d1c68670740cb049db935aa45c'
+          assert art.get('workflow_run',{}).get('id')==44591102013
+          print('PASS_P10_SUCCESS_COMMIT_ANCESTRY_ARTIFACT_DIGEST')
+          print('P11 from the exact GitHub artifact was locally diagnostic, not an extra GitHub workflow.')
+          PY
+          cat episode_output/v05215_preflight/P10_PINNED_GITHUB_PARENT.log
+
+      - name: Check HEAD committed ZIP CRC source hashes and immutable P11 NO GO
+        id: sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05215_preflight/ALL_SOURCE_FILE_SHA_GATES.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          name='hcraf_stage1am_f3_p12_counterbalanced_pilot_prereg_v05215_sources.zip'
+          manifest='HCRAF_F3_P12_COUNTERBALANCED_PILOT_V05215_SOURCE_SHA256.json'
+          expected=os.environ['V05215_SOURCE_SHA256']
+          blob=pathlib.Path(name).read_bytes()
+          sha=lambda b:hashlib.sha256(b).hexdigest()
+          assert sha(blob)==expected,'PINNED_ROOT_ZIP_SHA_MISMATCH'
+          assert subprocess.check_output(['git','show','HEAD:'+name])==blob,'ZIP_NOT_COMMITTED_AT_HEAD'
+          with zipfile.ZipFile(io.BytesIO(blob)) as z:
+              assert z.testzip() is None,'SOURCE_ZIP_BAD_CRC'
+              names=z.namelist();assert len(names)==len(set(names)),'DUPLICATE_MEMBER'
+              m=json.loads(z.read(manifest))
+              files=m['files']
+              assert set(names)==set(files)|{manifest},'FULL_MANIFEST_MEMBERS_CHANGED'
+              assert m['stage']=='v0.52.15_P12_A_COUNTERBALANCED_PRESSURE_PILOT_PREREG_ONLY'
+              assert m['parent_p10_run']==44591102013
+              assert m['parent_p10_commit']=='6bddc98b89cf47d7fca0eccc877916efe0e351a5'
+              assert m['parent_p10_artifact_id']==14565749815
+              assert m['parent_p10_artifact_sha256']=='45bfb6c2e65277d8aa00c480f2b5be789445c7d1c68670740cb049db935aa45c'
+              assert m['p11_report_sha256']=='a984085bfae01a69d673908f635d86d41e25cb7b1b9e80a837cdda1d090b71aa'
+              assert m['planned_pilot_conditions']==24 and m['pilot_seeds']==[23401,23402]
+              assert m['emitted_pilot_csvs']==12 and m['new_simulations']==0
+              assert m['pilot_executable_now'] is False and m['validation_test_executable_now'] is False
+              assert m['original_v0520_v0524_v0529_v05212_v05213_unchanged'] is True
+              assert m['official_F3_labels_constructed']==0 and m['F3_PR_AUC_computed'] is False
+              science={'Congestion':None,'FutureCongestion':None,'F3_ready':False,
+                       'GO_FREEZE':False,'training_ready':False,'heldout_release_authorized':False}
+              for k,v in science.items():assert m[k] is v,'SCIENCE_LOCK_CHANGED:'+k
+              root=pathlib.Path('episode_output/v05215_executor')
+              for n,expected_file_sha in files.items():
+                  p=pathlib.PurePosixPath(n)
+                  assert n.startswith('hcraf/episode/') and not n.startswith('/') and '..' not in p.parts
+                  assert '\\' not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16)
+                  data=z.read(n)
+                  assert sha(data)==expected_file_sha,'FILE_SHA_MISMATCH:'+n
+                  target=root/n
+                  assert not target.exists(),'REFUSE_OVERWRITE_SOURCE:'+n
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(data)
+              prior=root/'hcraf/episode/docs/1AM/F3_P12_TIME_COUNTERBALANCED_PILOT_v0.52.15/P4P11_DEV_TIME_CONDITIONED_DIAGNOSTIC_REPORT_v05214.json'
+              assert sha(prior.read_bytes())==m['p11_report_sha256']
+              d=json.loads(prior.read_text())
+              assert d['status']=='NO_GO_INDEPENDENT_PREDICTIVE_VALUE_NOT_DEMONSTRATED'
+              assert d['validation_seeds_consumed']==d['heldout_seeds_consumed']==0
+              assert d['mean_seed_block_AP_difference_vs_time_envelope']['observed_mean']<0
+              print('PASS_FULL_SOURCE_ZIP_COMMITTED_CRC_ALL_FILES_SHA_P11_LOCAL_NO_GO',len(files))
+          PY
+          cat episode_output/v05215_preflight/ALL_SOURCE_FILE_SHA_GATES.log
+
+      - name: Reproduce all twelve locked schedules matrix and science tests without simulation
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 \
+            PYTHONPATH=episode_output/v05215_executor/hcraf/episode/scripts \
+            python3 -m unittest discover \
+            -s episode_output/v05215_executor/hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12_randomized_pilot_v05215.py' -v \
+            > episode_output/v05215_preflight/P12A_SCHEDULE_REPLAY_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 \
+            python3 episode_output/v05215_executor/hcraf/episode/scripts/generate_stage1am_f3_p12_randomized_pilot_v05215.py \
+            > episode_output/v05215_preflight/IMMUTABLE_REPLAY.log 2>&1
+          cp episode_output/v05215_executor/hcraf/episode/docs/1AM/F3_P12_TIME_COUNTERBALANCED_PILOT_v0.52.15/P12A_PILOT_LOCKED_MATRIX_24_v05215.csv \
+             episode_output/v05215_preflight/P12A_LOCKED_MATRIX_24.csv
+          cp episode_output/v05215_executor/hcraf/episode/docs/1AM/F3_P12_TIME_COUNTERBALANCED_PILOT_v0.52.15/P12A_PILOT_SCHEDULE_COMMITMENTS_12_v05215.json \
+             episode_output/v05215_preflight/P12A_SCHEDULE_COMMITMENTS_12.json
+          tail -15 episode_output/v05215_preflight/P12A_SCHEDULE_REPLAY_TESTS.log
+
+      - name: Always attest no pilot execution and locked scientific status
+        if: always()
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          SOURCES: ${{ steps.sources.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v05215_preflight
+          {
+            echo "P12A run=${GITHUB_RUN_ID:-unknown} commit=${GITHUB_SHA:-unknown}"
+            echo "parent=$PARENT sources=$SOURCES tests=$TESTS"
+            echo 'Exactly 0 simulations; 24 PILOT_EXCLUDED cases designed only; P12B executor not yet authorized'
+            echo '0 Validation/Test runs, 0 official F3 labels, 0 model fits, 0 official PR-AUC'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'Stage 1AO and NSGA-III forbidden'
+          } > episode_output/v05215_preflight/P12A_ZERO_EXECUTION_SCIENCE_FENCE.txt
+
+      - name: Always upload small P12A immutable preregistration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12-time-counterbalanced-pilot-prereg-v05215-run-${{ github.run_id }}
+          path: episode_output/v05215_preflight/
+          if-no-files-found: error
+          retention-days: 30
