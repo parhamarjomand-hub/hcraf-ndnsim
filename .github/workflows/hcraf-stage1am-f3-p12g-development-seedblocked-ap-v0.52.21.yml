@@ -1,0 +1,181 @@
+name: "HCRAF F3 P12G Development Seed-Blocked PR-AUC (v0.52.21)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  p12g-six-fresh-development-seed-blocked-oof-no-validation-no-heldout:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env:
+      P12F_SOURCES_SHA256: "000f5d89c0490c46afdc5e4d741dcf85935e193f013dd37a4ed33299b7403082"
+      P12E_SOURCES_SHA256: "72e46581c8124e83372fb84f5bf014637d44d1c61f990cb8d0582f04de14b96f"
+      P12G_SOURCES_SHA256: "21f0ac48cb825a97b8deb8bc8b2377483a1140fe9ffa2e0aaa32872e26451df2"
+    steps:
+      - name: Checkout full provenance history
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Prepare read-only development evidence preflight
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05221_preflight
+          echo 'P12G: exactly six DEVELOPMENT seed-blocked OOF folds; zero new ndnSIM, zero Validation/Heldout, no Stage 1AO.' > episode_output/v05221_preflight/START_HERE.txt
+
+      - name: Authenticate successful P12F physical parent and all Git source preimages
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05221_preflight/P12F_PINNED_PARENT_AND_GIT_SHA.log 2>&1
+          import hashlib,json,os,pathlib,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
+             'User-Agent':'HCRAF-P12G-v05221'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request(
+                  'https://api.github.com/repos/'+repo+path,headers=h),timeout=60) as resp:
+                  return json.load(resp)
+          run=get('/actions/runs/44764413606')
+          commit='293a7b5fcd73ba1afb50c8a8116cbc0b636850a7'
+          assert run['id']==44764413606 and run['status']=='completed'
+          assert run['conclusion']=='success' and run['head_sha']==commit
+          assert run['path'].endswith('/hcraf-stage1am-f3-p12-development-physical-v0.52.20.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+          artifact=get('/actions/artifacts/14649465595')
+          assert artifact['name']=='hcraf-f3-p12f-development-physical-v05220-run-44764413606'
+          assert artifact['digest']=='sha256:d5bdc660033e6eee23bba2e4f5a6412ca81363a9f8d40a252dcb3aefe1365f24'
+          assert not artifact['expired'] and artifact.get('workflow_run',{}).get('id')==44764413606
+          for source,env in (
+              ('hcraf_stage1am_f3_p12_development_v05220_sources.zip','P12F_SOURCES_SHA256'),
+              ('hcraf_stage1am_f3_p12e_independent_prereg_v05219_sources.zip','P12E_SOURCES_SHA256'),
+              ('hcraf_stage1am_f3_p12g_seedblocked_dev_v05221_sources.zip','P12G_SOURCES_SHA256')):
+              blob=pathlib.Path(source).read_bytes()
+              assert hashlib.sha256(blob).hexdigest()==os.environ[env],source+' HASH'
+              assert subprocess.check_output(['git','show','HEAD:'+source])==blob,source+' GIT'
+          print('PASS_P12G_P12F_RUN_COMMIT_ARTIFACT_SHA_GIT_ANCESTRY_SOURCES')
+          PY
+          cat episode_output/v05221_preflight/P12F_PINNED_PARENT_AND_GIT_SHA.log
+
+      - name: Restore SHA-authenticated P12G source ZIP without parent overwrite
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05221_preflight/P12G_SOURCE_FILE_SHA.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,zipfile
+          source=pathlib.Path('hcraf_stage1am_f3_p12g_seedblocked_dev_v05221_sources.zip')
+          raw=source.read_bytes()
+          sha=lambda x:hashlib.sha256(x).hexdigest()
+          assert sha(raw)==os.environ['P12G_SOURCES_SHA256']
+          manifest='HCRAF_F3_P12G_SEED_BLOCKED_DEV_V05221_SOURCE_SHA256.json'
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None
+              names=z.namelist()
+              assert len(names)==len(set(names))
+              m=json.loads(z.read(manifest))
+              assert set(names)==set(m['files'])|{manifest}
+              assert m['stage']=='v0.52.21_P12G_PROSPECTIVE_FIXED_DEV_SEED_BLOCKED_OOF_ONLY'
+              assert m['parent_p12f_run']==44764413606
+              assert m['parent_p12f_commit']=='293a7b5fcd73ba1afb50c8a8116cbc0b636850a7'
+              assert m['parent_p12f_artifact_id']==14649465595
+              assert m['parent_p12f_artifact_sha256']=='d5bdc660033e6eee23bba2e4f5a6412ca81363a9f8d40a252dcb3aefe1365f24'
+              for k,v in {'Congestion':None,'FutureCongestion':None,
+                          'F3_ready':False,'GO_FREEZE':False,'training_ready':False,
+                          'heldout_release_authorized':False}.items():
+                  assert m[k] is v,k
+              assert m['development_only_model_cases']==36
+              assert m['validation_cases_authorized']==m['heldout_cases_authorized']==0
+              for name,digest in m['files'].items():
+                  p=pathlib.PurePosixPath(name)
+                  assert name.startswith('hcraf/episode/') and '..' not in p.parts
+                  assert not name.startswith('/') and '\\' not in name
+                  assert not stat.S_ISLNK(z.getinfo(name).external_attr>>16)
+                  blob=z.read(name)
+                  assert sha(blob)==digest,name
+                  target=pathlib.Path(name)
+                  assert not target.exists(),'REFUSE_OVERWRITE:'+name
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(blob)
+              print('PASS_P12G_EVERY_SOURCE_SHA_CRC_PROTECTED_PARENTS',len(m['files']))
+          PY
+          cat episode_output/v05221_preflight/P12G_SOURCE_FILE_SHA.log
+
+      - name: Run fixed-scope P12G leakage and seed-blocked synthetic unit tests
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+              -p 'test_stage1am_f3_p12g_seedblocked_dev_v05221.py' -v \
+            > episode_output/v05221_preflight/P12G_FIXED_MODEL_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 python3 \
+            hcraf/episode/scripts/run_stage1am_f3_p12g_seedblocked_dev_v05221.py \
+              --preflight-only \
+            > episode_output/v05221_preflight/P12G_PREREG_ZERO_MODEL_PREFLIGHT.json
+          tail -15 episode_output/v05221_preflight/P12G_FIXED_MODEL_TESTS.log
+
+      - name: Download exact P12F already audited 72-case parent evidence
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-p12f-development-physical-v05220-run-44764413606
+          run-id: "44764413606"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: p12g_input
+
+      - name: Independently seal all 2886 raw SHA files then compute six-seed development OOF AP
+        id: evaluate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 \
+            hcraf/episode/scripts/run_stage1am_f3_p12g_seedblocked_dev_v05221.py \
+            > episode_output/v05221_preflight/P12G_DEV_ONLY_EVAL_AND_RAW_AUDIT.log 2>&1
+          tail -25 episode_output/v05221_preflight/P12G_DEV_ONLY_EVAL_AND_RAW_AUDIT.log
+
+      - name: Always capture scientific locks and stage outcomes
+        if: always()
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          RESTORE: ${{ steps.restore.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          DOWNLOAD: ${{ steps.download.outcome }}
+          EVALUATE: ${{ steps.evaluate.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v05221_preflight
+          {
+            echo "P12G run=${GITHUB_RUN_ID:-unknown} commit=${GITHUB_SHA:-unknown}"
+            echo "parent=$PARENT restore=$RESTORE tests=$TESTS download=$DOWNLOAD evaluate=$EVALUATE"
+            echo 'P12G: 6 DEV seed-blocked OOF folds; 36 telemetry-on cases, 4608 OOF decisions'
+            echo '0 new ndnSIM simulations; 0 Validation cases; 0 Heldout cases'
+            echo 'Official F3 PR-AUC = NOT COMPUTED; development diagnostic AP only'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'Stage 1AO and NSGA-III forbidden'
+          } > episode_output/v05221_preflight/SCIENCE_LOCKS_AND_STEP_OUTCOMES.txt
+
+      - name: Always upload audited P12G development-only metrics and separate evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12g-dev-seedblocked-ap-v05221-run-${{ github.run_id }}
+          path: |
+            episode_output/v05221_preflight/
+            episode_output/stage1am_f3_p12g_development_v05221/
+          if-no-files-found: error
+          retention-days: 30
