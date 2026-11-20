@@ -1,0 +1,196 @@
+name: "HCRAF F3 P12 Tail-Probe Recovery (v0.52.17.1 P12C-R)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  recover-identical-p12c-prereg-and-replay-parent-evidence-no-simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      V05217_SOURCE_SHA256: "3ca589f68f211a6c33b05ed89c955b1041aa5ad6db2dfb338586a7be9915aa84"
+    steps:
+      - name: Checkout complete ancestry and signed sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize zero simulation scientific fence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05217_preflight episode_output/v05217_executor
+          echo 'P12C: prospective ONLY; no simulation, no formal labels, no training; two new 23501/23502 PILOT_EXCLUDED seeds.' > episode_output/v05217_preflight/START_HERE_FA.txt
+
+      - name: Authenticate P12A P12B and failed P12C transport-only run with exact Git ancestry
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05217_preflight/P12B_PARENT_PROOF.log 2>&1
+          import json,os,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
+                   'User-Agent':'HCRAF-P12C-v05217'}
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=headers)
+              with urllib.request.urlopen(req,timeout=80) as response:return json.load(response)
+          a=get('/actions/runs/44688603269');b=get('/actions/runs/44692358819')
+          failed_c=get('/actions/runs/44720988380')
+          a_sha='13cab43cbc1965eb42e78693b3bf4f29e199874e'
+          b_sha='07ae01f773b1273faddad96aa260bd0052994f6a'
+          assert a['status']=='completed' and a['conclusion']=='success' and a['head_sha']==a_sha
+          assert b['status']=='completed' and b['conclusion']=='success' and b['head_sha']==b_sha
+          assert b['path'].endswith('/hcraf-stage1am-f3-p12-counterbalanced-pilot-v0.52.16.yml')
+          assert failed_c['status']=='completed' and failed_c['conclusion']=='failure'
+          assert failed_c['head_sha']=='c738b131aba2497815d685032f4932b8bec26c2f'
+          assert failed_c['path'].endswith('/hcraf-stage1am-f3-p12-tail-probe-prereg-v0.52.17.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',a_sha,b_sha])
+          subprocess.check_call(['git','merge-base','--is-ancestor',b_sha,'HEAD'])
+          subprocess.check_call(['git','merge-base','--is-ancestor','c738b131aba2497815d685032f4932b8bec26c2f','HEAD'])
+          art_a=get('/actions/artifacts/14607013980')
+          assert art_a['digest']=='sha256:6234850df8c2e12b67c61fae87b830aa1fec237a4dfe5c76f53e1a7eb61f8b42'
+          assert art_a.get('workflow_run',{}).get('id')==44688603269
+          art_b=get('/actions/artifacts/14610069765')
+          assert art_b['name']=='hcraf-f3-p12-counterbalanced-pilot-v05216-run-44692358819'
+          assert not art_b['expired'] and art_b.get('workflow_run',{}).get('id')==44692358819
+          assert art_b['digest']=='sha256:b8626f15f2ba295fcaac5c22b953daf5a3d1fcf702102d0ac2413e931da19177'
+          failed_art=get('/actions/artifacts/14622005770')
+          assert failed_art['name']=='hcraf-f3-p12c-tail-probe-prereg-v05217-run-44720988380'
+          assert failed_art['digest']=='sha256:b0e9ca6233ca898adf0a9db9fb452035438c12d9a98ce7c6721c3313e6e9e721'
+          assert failed_art.get('workflow_run',{}).get('id')==44720988380
+          print('PASS_P12A_P12B_PARENT_AND_FAILED_P12C_TRANSPORT_ONLY_ANCESTRY_ARTIFACT_SHA')
+          PY
+          cat episode_output/v05217_preflight/P12B_PARENT_PROOF.log
+
+      - name: Authenticate HEAD ZIP and every internal source hash without extracting into repository
+        id: sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05217_preflight/ALL_SOURCE_HASHES.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          zipname='hcraf_stage1am_f3_p12_tail_probe_prereg_v05217_sources.zip'
+          manifest_name='HCRAF_F3_P12C_TAIL_PROBE_V05217_SOURCE_SHA256.json'
+          blob=pathlib.Path(zipname).read_bytes()
+          sha=lambda x:hashlib.sha256(x).hexdigest()
+          assert sha(blob)==os.environ['V05217_SOURCE_SHA256'],'WRONG_PINNED_SOURCE_ZIP_SHA'
+          assert subprocess.check_output(['git','show','HEAD:'+zipname])==blob,'SOURCE_NOT_COMMITTED_AT_HEAD'
+          workflow='.github/workflows/hcraf-stage1am-f3-p12-tail-probe-prereg-recovery-v0.52.17.1.yml'
+          assert subprocess.check_output(['git','show','HEAD:'+workflow])==pathlib.Path(workflow).read_bytes()
+          with zipfile.ZipFile(io.BytesIO(blob)) as z:
+              assert z.testzip() is None,'SOURCE_ZIP_CRC_BAD'
+              names=z.namelist();assert len(names)==len(set(names))
+              m=json.loads(z.read(manifest_name));files=m['files']
+              assert set(names)==set(files)|{manifest_name},'SOURCE_MEMBERS_NOT_MANIFEST_EXACT'
+              assert m['stage']=='v0.52.17_P12_C_PROSPECTIVE_TAIL_PROBE_PREREG_ONLY'
+              assert m['parent_p12b_run']==44692358819
+              assert m['parent_p12b_artifact_id']==14610069765
+              assert m['new_simulations']==0 and m['pilot_seeds']==[23501,23502]
+              assert m['scheduled_future_cases']==24 and m['precommitted_csvs']==12
+              assert m['official_F3_labels_constructed']==0 and m['F3_PR_AUC_computed'] is False
+              for k in ['F3_ready','GO_FREEZE','training_ready','heldout_release_authorized']:
+                  assert m[k] is False
+              assert m['Congestion'] is None and m['FutureCongestion'] is None
+              root=pathlib.Path('episode_output/v05217_executor')
+              for name,expected in files.items():
+                  p=pathlib.PurePosixPath(name)
+                  assert name.startswith('hcraf/episode/') and '..' not in p.parts and '\\' not in name
+                  assert not stat.S_ISLNK(z.getinfo(name).external_attr>>16)
+                  data=z.read(name);assert sha(data)==expected,'SOURCE_FILE_SHA:'+name
+                  target=root/name;assert not target.exists();target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(data)
+              print('PASS_ROOT_SOURCE_SHA_GIT_COMMIT_CRC_FILE_SHA',len(files))
+          PY
+          cat episode_output/v05217_preflight/ALL_SOURCE_HASHES.log
+
+      - name: Recover P12B raw bytes using authenticated API and credential-free redirected storage
+        id: audit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # curl -L intentionally does NOT forward Authorization to a different
+          # redirect host (the original urllib.request did and got HTTP 401).
+          curl --location --fail --silent --show-error \
+            --retry 3 --retry-all-errors --connect-timeout 25 --max-time 240 \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header 'Accept: application/vnd.github+json' \
+            --user-agent 'HCRAF-P12C-RECOVERY-v052171' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/14610069765/zip" \
+            --output episode_output/v05217_preflight/P12B_original_artifact_TEMP.zip \
+            2> episode_output/v05217_preflight/P12B_ARTIFACT_TRANSFER_ERRORS.log
+          python3 - <<'PY' > episode_output/v05217_preflight/P12B_ARTIFACT_DOWNLOAD_SHA.log 2>&1
+          import hashlib,pathlib
+          blob=pathlib.Path('episode_output/v05217_preflight/P12B_original_artifact_TEMP.zip').read_bytes()
+          expected='b8626f15f2ba295fcaac5c22b953daf5a3d1fcf702102d0ac2413e931da19177'
+          assert hashlib.sha256(blob).hexdigest()==expected,'P12B_ARTIFACT_BYTES_TAMPERED'
+          print('PASS_P12B_ORIGINAL_GITHUB_BYTES_SHA256',len(blob))
+          PY
+          python3 episode_output/v05217_executor/hcraf/episode/scripts/audit_stage1am_f3_p12b_parent_v05217.py \
+            episode_output/v05217_preflight/P12B_original_artifact_TEMP.zip \
+            --report episode_output/v05217_executor/hcraf/episode/docs/1AM/F3_P12_TAIL_PROBE_PREREG_v0.52.17/P12C_P12B_FORENSIC_AUDIT.json \
+            > episode_output/v05217_preflight/P12B_FORENSIC_REPLAY.log 2>&1
+          # Parent raw archive is never copied into the small P12C output artifact.
+          rm episode_output/v05217_preflight/P12B_original_artifact_TEMP.zip
+          cat episode_output/v05217_preflight/P12B_FORENSIC_REPLAY.log
+
+      - name: Reproduce all 12 schedules and run pilot-only preregistration tests
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 \
+          PYTHONPATH=episode_output/v05217_executor/hcraf/episode/scripts \
+          python3 -m unittest discover \
+            -s episode_output/v05217_executor/hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12_tail_probe_v05217.py' -v \
+            > episode_output/v05217_preflight/P12C_LOCKED_TESTS.log 2>&1
+          python3 episode_output/v05217_executor/hcraf/episode/scripts/generate_stage1am_f3_p12_tail_probe_prereg_v05217.py \
+            > episode_output/v05217_preflight/IMMUTABLE_SCHEDULE_REPLAY.log 2>&1
+          cp episode_output/v05217_executor/hcraf/episode/docs/1AM/F3_P12_TAIL_PROBE_PREREG_v0.52.17/P12C_PILOT_LOCKED_MATRIX_24_v05217.csv \
+             episode_output/v05217_preflight/P12C_LOCKED_MATRIX_24.csv
+          cp episode_output/v05217_executor/hcraf/episode/docs/1AM/F3_P12_TAIL_PROBE_PREREG_v0.52.17/P12C_PILOT_SCHEDULE_COMMITMENTS_12_v05217.json \
+             episode_output/v05217_preflight/P12C_COMMITMENTS_12.json
+          cp episode_output/v05217_executor/hcraf/episode/docs/1AM/F3_P12_TAIL_PROBE_PREREG_v0.52.17/P12C_P12B_FORENSIC_AUDIT.json \
+             episode_output/v05217_preflight/P12C_P12B_FORENSIC_AUDIT.json
+          tail -14 episode_output/v05217_preflight/P12C_LOCKED_TESTS.log
+
+      - name: Always record scientific locks even on failure
+        if: always()
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          SOURCES: ${{ steps.sources.outcome }}
+          AUDIT: ${{ steps.audit.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v05217_preflight
+          {
+            echo "P12C-R v0.52.17.1 run=${GITHUB_RUN_ID:-unknown} commit=${GITHUB_SHA:-unknown}"
+            echo "parent=$PARENT sources=$SOURCES audit=$AUDIT tests=$TESTS"
+            echo 'Transport-only recovery; the v0.52.17 scientific source ZIP and all twelve hashes are BYTE-IDENTICAL.'
+            echo 'P12C exactly ZERO new simulations; 24 new 23501/23502 PILOT_EXCLUDED P12D cases PRE-REGISTERED ONLY'
+            echo 'P12A v0.52.15 immutable; P12B 75ms immutable; no future labels in decision-time features'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'ZERO official F3 labels, ZERO formal PR-AUC, ZERO model fits, ZERO Validation/Heldout; Stage1AO and NSGA-III forbidden'
+          } > episode_output/v05217_preflight/P12C_SCIENCE_FENCE.txt
+
+      - name: Always upload immutable P12C zero-simulation audit and future commitments
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12c-tail-probe-prereg-recovery-v052171-run-${{ github.run_id }}
+          path: episode_output/v05217_preflight/
+          if-no-files-found: error
+          retention-days: 30
