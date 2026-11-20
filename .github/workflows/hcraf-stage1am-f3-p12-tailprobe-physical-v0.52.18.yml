@@ -1,0 +1,237 @@
+name: "HCRAF F3 P12 Tail-Probe Physical PILOT 24 (v0.52.18 P12D)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  execute-exactly-p12c-frozen-twenty-four-permanently-excluded-pilot-cases:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 355
+    env:
+      V0526_SOURCE_SHA256: "bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63"
+      V05216_SOURCE_SHA256: "33b4c9d18d1f0f3cef581ce4e2b8e983295eb678d67a3939a8b4faa786fcc0b5"
+      V05218_SOURCE_SHA256: "e4cf3e0b0784763746c3a690a9f716f70ecb27a5a88d9ac2a31fb798fa3992fb"
+    steps:
+      - name: Install pinned ndnSIM dependencies with bounded retry and cache
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          : > /tmp/p12d_apt_update.log
+          : > /tmp/p12d_apt_install.log
+          sed -i '/focal-backports/d' /etc/apt/sources.list
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          for attempt in 1 2 3; do
+            if [ "$attempt" -eq 2 ]; then
+              sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            elif [ "$attempt" -eq 3 ]; then
+              sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            fi
+            apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 update >> /tmp/p12d_apt_update.log 2>&1 || true
+            if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 install -y --no-install-recommends \
+              git curl ca-certificates build-essential \
+              python3 python3-dev python3-setuptools python3-pip python3-pytest \
+              pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+              libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+              libevent-dev graphviz doxygen time >> /tmp/p12d_apt_install.log 2>&1; then
+              echo "PASS_P12D_APT_ATTEMPT=$attempt" >> /tmp/p12d_apt_install.log
+              exit 0
+            fi
+          done
+          tail -50 /tmp/p12d_apt_install.log
+          exit 1
+
+      - name: Checkout complete Git history
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Initialize 24 frozen P12D physical pilot diagnostics
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05218_preflight
+          echo 'P12D: exactly 24 PILOT_EXCLUDED physical cases; P12C 12 CSV SHA-locked; no formal F3 partitions or ML training.' > episode_output/v05218_preflight/START_HERE.txt
+
+      - name: Authenticate P12C recovery success commit source ZIP and artifact digest
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > episode_output/v05218_preflight/P12C_PINNED_GITHUB_PARENT.log 2>&1
+          import json,os,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json',
+             'User-Agent':'HCRAF-P12D-v05218'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request(
+                  'https://api.github.com/repos/'+repo+path,headers=h),timeout=60) as r:
+                  return json.load(r)
+          run=get('/actions/runs/44722370722')
+          commit='9422921f2b85bc3e022050f87191ea4be85ec29d'
+          assert run['id']==44722370722 and run['status']=='completed' and run['conclusion']=='success'
+          assert run['head_sha']==commit
+          assert run['path'].endswith('/hcraf-stage1am-f3-p12-tail-probe-prereg-recovery-v0.52.17.1.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+          artifact=get('/actions/artifacts/14622461987')
+          assert artifact['name']=='hcraf-f3-p12c-tail-probe-prereg-recovery-v052171-run-44722370722'
+          assert artifact['digest']=='sha256:d35413d1ccda0ec888e410d59ea0f887be7e42851bf3b6218c2a4b069fcc360f'
+          assert not artifact['expired'] and artifact.get('workflow_run',{}).get('id')==44722370722
+          from pathlib import Path
+          import hashlib
+          z=Path('hcraf_stage1am_f3_p12_tail_probe_prereg_v05217_sources.zip').read_bytes()
+          assert hashlib.sha256(z).hexdigest()=='3ca589f68f211a6c33b05ed89c955b1041aa5ad6db2dfb338586a7be9915aa84'
+          assert subprocess.check_output(['git','show','HEAD:hcraf_stage1am_f3_p12_tail_probe_prereg_v05217_sources.zip'])==z
+          print('PASS_P12C_SUCCESS_44722370722_COMMIT_ARTIFACT_SOURCE_SHA_GIT_ANCESTRY')
+          PY
+          cat episode_output/v05218_preflight/P12C_PINNED_GITHUB_PARENT.log
+
+      - name: Retrieve unchanged v0.52.0 original preregistration receipt
+        id: receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          run-id: "43567814962"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/v0526_preflight/lock_artifact
+
+      - name: SHA bootstrap all historical parents frozen P12C and new P12D executor
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05218_preflight/ALL_PINNED_SOURCES_AND_SHA.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,subprocess,zipfile
+          name='hcraf_stage1am_f3_p12_tailprobe_v05218_sources.zip'
+          manifest='HCRAF_F3_P12D_TAIL_PROBE_EXECUTOR_V05218_SOURCE_SHA256.json'
+          helper='hcraf/episode/scripts/prepare_stage1am_f3_p12_tailprobe_v05218.py'
+          raw=pathlib.Path(name).read_bytes()
+          sha=lambda d:hashlib.sha256(d).hexdigest()
+          assert sha(raw)==os.environ['V05218_SOURCE_SHA256'],'CURRENT_ZIP_SHA_CHANGED'
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw,'CURRENT_ZIP_NOT_GIT_COMMITTED'
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None,'CURRENT_ZIP_BAD_CRC'
+              names=z.namelist()
+              assert len(names)==len(set(names)),'DUPLICATE_CURRENT_SOURCE_MEMBER'
+              m=json.loads(z.read(manifest))
+              assert set(names)==set(m['files'])|{manifest},'CURRENT_SOURCE_MANIFEST_MISMATCH'
+              for n,digest in m['files'].items():
+                  p=pathlib.PurePosixPath(n)
+                  assert n.startswith('hcraf/episode/') and '..' not in p.parts and '\\' not in n
+                  assert not stat.S_ISLNK(z.getinfo(n).external_attr>>16)
+                  assert sha(z.read(n))==digest,'CURRENT_SOURCE_FILE_SHA:'+n
+              assert helper in m['files'],'MISSING_AUTHENTICATED_RESTORE_HELPER'
+              source=z.read(helper)
+          exec(compile(source,helper,'exec'),{'__name__':'__main__'})
+          PY
+          tail -35 episode_output/v05218_preflight/ALL_PINNED_SOURCES_AND_SHA.log
+
+      - name: Test all P12A P12B P12C P12D prereg and independent leakage gates
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12_randomized_pilot_v05215.py' -v \
+            > episode_output/v05218_preflight/ALL_P12_SCIENCE_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12_pilot_v05216.py' -v \
+            >> episode_output/v05218_preflight/ALL_P12_SCIENCE_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12_tail_probe_v05217.py' -v \
+            >> episode_output/v05218_preflight/ALL_P12_SCIENCE_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12_tailprobe_v05218.py' -v \
+            >> episode_output/v05218_preflight/ALL_P12_SCIENCE_TESTS.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 hcraf/episode/scripts/run_stage1am_f3_p12_tailprobe_v05218.py --preflight-only \
+            > episode_output/v05218_preflight/P12D_24_CASE_ZERO_SIM_PRECHECK.json
+          tail -23 episode_output/v05218_preflight/ALL_P12_SCIENCE_TESTS.log
+
+      - name: Build isolated v0.52.18 tail probe pilot C++ on proven ndnSIM
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_p12_tailprobe_v05218.sh \
+            > episode_output/v05218_preflight/CPP_BUILD.log 2>&1
+          tail -20 episode_output/v05218_preflight/CPP_BUILD.log
+
+      - name: Execute exactly 24 P12C frozen PILOT_EXCLUDED cases gate after both seeds
+        id: simulate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/run_stage1am_f3_p12_tailprobe_v05218.py \
+            > episode_output/v05218_preflight/P12D_PILOT_PHYSICAL_AND_SCIENCE_GATES.log 2>&1
+          tail -35 episode_output/v05218_preflight/P12D_PILOT_PHYSICAL_AND_SCIENCE_GATES.log
+
+      - name: Always save scientific fences and physical failure diagnostics
+        if: always()
+        id: diagnose
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          RESTORE: ${{ steps.restore.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          SIMULATE: ${{ steps.simulate.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v05218_preflight
+          {
+            echo "P12D run=${GITHUB_RUN_ID:-unknown} commit=${GITHUB_SHA:-unknown}"
+            echo "parent=$PARENT restore=$RESTORE tests=$TESTS build=$BUILD simulate=$SIMULATE"
+            echo 'Exactly 24 permanently PILOT_EXCLUDED physical cases from P12C 23501/23502; no Development/Validation/Heldout'
+            echo 'Scientific NO_GO is recorded in the pilot summary, not silently converted to official GO'
+            echo '0 official F3 labels, 0 model fits, 0 official PR-AUC'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+            echo 'Stage 1AO and NSGA-III forbidden'
+          } > episode_output/v05218_preflight/SCIENCE_LOCKS_AND_STEP_OUTCOMES.txt
+          find episode_output/v05218_preflight episode_output/stage1am_f3_p12_tailprobe_v05218 \
+            -maxdepth 2 -type f 2>/dev/null | sort \
+            > episode_output/v05218_preflight/OUTPUT_INVENTORY.txt || true
+          cp /tmp/p12d_apt_update.log episode_output/v05218_preflight/apt_update.log 2>/dev/null || true
+          cp /tmp/p12d_apt_install.log episode_output/v05218_preflight/apt_install.log 2>/dev/null || true
+
+      - name: Always upload P12D 2 raw ZIPs and future separate diagnostic tables
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12d-tailprobe-physical-v05218-run-${{ github.run_id }}
+          path: |
+            episode_output/v05218_preflight/
+            episode_output/stage1am_f3_p12_tailprobe_v05218/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Save unarchived temporary raw witnesses if an unexpected technical failure occurs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12d-v05218-temporary-failure-evidence-${{ github.run_id }}
+          path: episode_output/v05218_temporary_raw_seed_work/
+          if-no-files-found: ignore
+          compression-level: 6
+          retention-days: 30
