@@ -1,0 +1,74 @@
+name: "HCRAF F3 P12I Independent P12H Read-Only Audit (v0.52.23)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  independent-audit-only-no-training-no-simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Verify pinned P12H successful run, immutable parent, and artifact identity
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYRUN'
+          import hashlib,json,os,pathlib,subprocess,urllib.request,zipfile,io
+          repo='parhamarjomand-hub/hcraf-ndnsim';token=os.environ['GH_TOKEN']
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12I-v05223'}
+          def get(endpoint):
+              with urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/'+repo+endpoint,headers=h),timeout=60) as f:return json.load(f)
+          run=get('/actions/runs/44787046706')
+          assert run['status']=='completed' and run['conclusion']=='success'
+          assert run['head_sha']=='5ebf69dfe2adf9ced5b09b12fe6691ebe626b9a4'
+          assert 'p12h' in run['name'].lower()
+          subprocess.check_call(['git','merge-base','--is-ancestor',run['head_sha'],'HEAD'])
+          artifact=get('/actions/artifacts/14662582006')
+          assert artifact['workflow_run']['id']==44787046706 and not artifact['expired']
+          assert artifact['name']=='hcraf-f3-p12h-independent-validation-v05222-run-44787046706'
+          raw=pathlib.Path('hcraf_stage1am_f3_p12i_independent_audit_v05223_sources.zip').read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='88a4d8a2e590de44ce110b035b579de7c6d997e3c6ccb97f3cd9a1518e796dfa'
+          assert subprocess.check_output(['git','show','HEAD:hcraf_stage1am_f3_p12i_independent_audit_v05223_sources.zip'])==raw
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12I_V05223_SOURCE_SHA256.json'))['files']
+              assert set(z.namelist())==set(m)|{'HCRAF_F3_P12I_V05223_SOURCE_SHA256.json'}
+              for n,h in m.items():assert hashlib.sha256(z.read(n)).hexdigest()==h
+              z.extractall('.')
+          print('PASS_PINNED_PARENT_SOURCE_AND_ARTIFACT_ID')
+          PYRUN
+      - name: Download original P12H 48-case evidence (not a rerun)
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-p12h-independent-validation-v05222-run-44787046706
+          run-id: '44787046706'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: p12i_input_p12h
+      - name: Independently recompute physical QC, model frozen receipts, AP and seed-block CI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/stage1am_f3_p12i_independent_audit_v05223
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12i_independent_v05223.py \
+            p12i_input_p12h/stage1am_f3_p12h_validation_v05222 \
+            episode_output/stage1am_f3_p12i_independent_audit_v05223
+      - name: Preserve audit and science lock status even on audit failures
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p episode_output/stage1am_f3_p12i_independent_audit_v05223
+          printf '%s\n' 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false' '0 simulations; 0 new model fits; 0 heldout tests; Stage 1AO and NSGA-III forbidden' > episode_output/stage1am_f3_p12i_independent_audit_v05223/SCIENCE_LOCKS.txt
+      - name: Upload immutable P12I independent audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12i-independent-audit-v05223-run-${{ github.run_id }}
+          path: episode_output/stage1am_f3_p12i_independent_audit_v05223/
+          if-no-files-found: error
+          retention-days: 30
