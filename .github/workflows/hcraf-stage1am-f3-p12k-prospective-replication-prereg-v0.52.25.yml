@@ -1,0 +1,136 @@
+name: "HCRAF F3 P12K Fresh-Seed Prospective Replication Prereg (v0.52.25)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  p12k-zero-simulation-sha-locked-replication-prereg:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      P12K_SOURCE_SHA256: "13ff992e6be059e0ba8f92bb1cf97f76d5c3ed78fe259cfe43b78f47c01ce287"
+    steps:
+      - name: Checkout full provenance
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Initialize read-only zero-simulation prereg logs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/v05225_preflight
+          echo 'P12K 36 new seeds; fixed prior frozen model; ZERO simulations or fits; prior NO_GO preserved.' > episode_output/v05225_preflight/START_HERE.txt
+      - name: Independently authenticate exact four GitHub parent runs, commits and artifacts
+        id: parents
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05225_preflight/P12K_AUTHENTICATED_PARENTS.log 2>&1
+          import hashlib,json,os,pathlib,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim','WRONG_REPO'
+          token=os.environ['GH_TOKEN'];assert token
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12K-v05225'}
+          def get(p):
+              with urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/'+repo+p,headers=h),timeout=60) as r:return json.load(r)
+          parents=(
+           (44779320010,'9689fa0e1c5dc80a990451a282cf78f1b0e71c6c',14652215437,'1792fce65047c4594f8fd8691cd8480842edfaae0a2b38bb5cf75226b5919718'),
+           (44787046706,'5ebf69dfe2adf9ced5b09b12fe6691ebe626b9a4',14662582006,'9acca587f3bbe51eef360ae50ef12ff57cb1f5b890511b8ad1310980c91d3240'),
+           (44895950750,'e0a8b2fa140f3bbc63bfead4e15f0b7bbec2a55f',14704105818,'3088344d77a113bd917a17d6636bf4f1b24378f3539cafa63e302a0e66c039ce'),
+           (45176406216,'324bcd7e528cb512cb4da87e004132d11b9d3550',14819417233,'8f9a1d29a1358769c6182424cae41aadb7b52556fea6f7b5dfea7fca2091dc2a'))
+          for run,commit,aid,hash_ in parents:
+              r=get('/actions/runs/'+str(run));a=get('/actions/artifacts/'+str(aid))
+              assert r['status']=='completed' and r['conclusion']=='success' and r['head_sha']==commit,('RUN',run)
+              assert a['digest']=='sha256:'+hash_ and not a['expired'] and a['workflow_run']['id']==run,('ARTIFACT',aid)
+              subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+              print('PASS_PARENT',run,commit,aid,hash_)
+          name='hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip'
+          raw=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==os.environ['P12K_SOURCE_SHA256'],'SOURCE_SHA_CHANGED'
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE_GIT_CHANGED'
+          print('PASS_P12K_SOURCE_GIT_SHA',os.environ['P12K_SOURCE_SHA256'])
+          PY
+          cat episode_output/v05225_preflight/P12K_AUTHENTICATED_PARENTS.log
+      - name: Verify every nested SHA, CRC and safe path then no-overwrite restore
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/v05225_preflight/P12K_SOURCE_FILE_SHA.log 2>&1
+          import hashlib,io,json,os,pathlib,stat,zipfile
+          raw=pathlib.Path('hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip').read_bytes()
+          sha=lambda x:hashlib.sha256(x).hexdigest()
+          assert sha(raw)==os.environ['P12K_SOURCE_SHA256']
+          manifest='HCRAF_F3_P12K_SOURCE_SHA256_v05225.json'
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None
+              names=z.namelist();assert len(names)==len(set(names))
+              m=json.loads(z.read(manifest))
+              assert m['stage']=='P12K_v0.52.25_PREREG_ONLY' and m['new_simulations']==m['model_fits']==0
+              assert m['physical_cases_scheduled']==432 and m['seed_blocks']==36
+              assert m['F3_ready'] is False and m['GO_FREEZE'] is False and m['training_ready'] is False and m['heldout_release_authorized'] is False
+              assert set(names)==set(m['files'])|{manifest}
+              for name,expected in m['files'].items():
+                  path=pathlib.PurePosixPath(name)
+                  assert path.parts[0:2]==('hcraf','episode') and not path.is_absolute() and '..' not in path.parts and '\\' not in name
+                  assert not stat.S_ISLNK(z.getinfo(name).external_attr>>16)
+                  assert sha(z.read(name))==expected,('FILE_SHA',name)
+                  target=pathlib.Path(name)
+                  assert not target.exists(),('REFUSE_OVERWRITE_SOURCE',name)
+                  target.parent.mkdir(parents=True,exist_ok=True)
+                  target.write_bytes(z.read(name))
+              print('PASS_P12K_ALL_CRC_AND_NESTED_SHA_FILES',len(m['files']))
+          PY
+          cat episode_output/v05225_preflight/P12K_SOURCE_FILE_SHA.log
+      - name: Verify 10 science fences and previous NO_GO is not replaced
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12k_prereg_v05225.py' -v \
+            > episode_output/v05225_preflight/P12K_LOCK_TESTS.log 2>&1
+          tail -15 episode_output/v05225_preflight/P12K_LOCK_TESTS.log
+      - name: Reproduce every one of the 216 exact schedules and the complete 432-case matrix
+        id: prereg
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/audit_stage1am_f3_p12k_prereg_v05225.py \
+            > episode_output/v05225_preflight/P12K_SEALED_PREREG_RECEIPT.log 2>&1
+          cat episode_output/v05225_preflight/P12K_SEALED_PREREG_RECEIPT.log
+      - name: Always write scientific and execution locks
+        if: always()
+        shell: bash
+        env:
+          PARENTS: ${{ steps.parents.outcome }}
+          RESTORE: ${{ steps.restore.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          PREREG: ${{ steps.prereg.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/v05225_preflight
+          {
+             echo "P12K RUN=$GITHUB_RUN_ID COMMIT=$GITHUB_SHA parents=$PARENTS restore=$RESTORE tests=$TESTS prereg=$PREREG"
+             echo 'Existing P12H/P12I confirmatory gate NO_GO unchanged.'
+             echo 'New physical simulations=0; new model fits=0; Validation/Heldout reads=0.'
+             echo 'Do not execute 432 cases until P12K prereg run independently audited; P12L executor separately authorized.'
+             echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+          } > episode_output/v05225_preflight/SCIENCE_LOCKS_AND_STEP_OUTCOMES.txt
+      - name: Always upload immutable prereg receipt, tests and SHA provenance
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12k-prereg-v05225-run-${{ github.run_id }}
+          path: |
+            episode_output/v05225_preflight/
+            episode_output/stage1am_f3_p12k_prospective_prereg_v05225/
+          if-no-files-found: error
+          retention-days: 30
