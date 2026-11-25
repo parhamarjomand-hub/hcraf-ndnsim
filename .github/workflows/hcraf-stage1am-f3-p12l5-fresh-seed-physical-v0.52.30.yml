@@ -100,7 +100,7 @@ jobs:
           prev=get('/actions/runs/45653046932');prev_qc=get('/actions/artifacts/15048521139')
           assert prev['status']=='completed' and prev['conclusion']=='success'
           assert prev['head_sha']=='d78c36129738162c68abf19770ee977a450e8dd1'
-          assert prev['path'].endswith('/hcraf-stage1am-f3-p12l4-fresh-seed-physical-v0.52.28.yml')
+          assert prev['path'].endswith('/hcraf-stage1am-f3-p12l4-fresh-seed-physical-v0.52.29.yml')
           assert prev_qc['digest']=='sha256:2215028199b0488638512abbc5e1fb311d65320d98879be46e6247e775be13e9'
           assert prev_qc['workflow_run']['id']==45653046932 and not prev_qc['expired']
           subprocess.check_call(['git','merge-base','--is-ancestor',prev['head_sha'],'HEAD'])
