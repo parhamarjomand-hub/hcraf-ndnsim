@@ -1,0 +1,323 @@
+name: "HCRAF F3 P12L2 Fresh-Seed Physical Batch 2/6 (v0.52.27)"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+# Serialize repeated workflow invocations; six new seed jobs remain independent.
+concurrency:
+  group: hcraf-f3-p12l2-physical-v05227
+  cancel-in-progress: false
+
+jobs:
+  p12l2_physical_seed:
+    name: "Physical preregistered seed ${{ matrix.seed }}"
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 355
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        seed: [24807, 24808, 24809, 24810, 24811, 24812]
+    env:
+      V0526_SOURCE_SHA256: "bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63"
+      V05216_SOURCE_SHA256: "33b4c9d18d1f0f3cef581ce4e2b8e983295eb678d67a3939a8b4faa786fcc0b5"
+      V05218_SOURCE_SHA256: "e4cf3e0b0784763746c3a690a9f716f70ecb27a5a88d9ac2a31fb798fa3992fb"
+      V05219_SOURCE_SHA256: "72e46581c8124e83372fb84f5bf014637d44d1c61f990cb8d0582f04de14b96f"
+      V05220_SOURCE_SHA256: "000f5d89c0490c46afdc5e4d741dcf85935e193f013dd37a4ed33299b7403082"
+      V05221_SOURCE_SHA256: "21f0ac48cb825a97b8deb8bc8b2377483a1140fe9ffa2e0aaa32872e26451df2"
+      V05222_SOURCE_SHA256: "351a57feec078bcadf9ba207087bb9774bee0c829aac38bacc5801ae810daddf"
+      V05225_SOURCE_SHA256: "13ff992e6be059e0ba8f92bb1cf97f76d5c3ed78fe259cfe43b78f47c01ce287"
+      V05226_SOURCE_SHA256: "68516e1acaffb9ba1b00cd38c8ce8b9ac91439485fea192f66b96cc05eccdb6a"
+      V05227_SOURCE_SHA256: "dfda5f3ef23379098ade996e1f31f68a4173b62dfc6c26a5b08e7fd65dc664ff"
+      SEED: "${{ matrix.seed }}"
+    steps:
+      - name: Install proven bounded-retry ndnSIM prerequisites
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          : > /tmp/p12l2_apt_update.log
+          : > /tmp/p12l2_apt_install.log
+          sed -i '/focal-backports/d' /etc/apt/sources.list
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          for attempt in 1 2 3; do
+            if [ "$attempt" -eq 2 ]; then
+              sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            elif [ "$attempt" -eq 3 ]; then
+              sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            fi
+            apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 update >> /tmp/p12l2_apt_update.log 2>&1 || true
+            if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 install -y --no-install-recommends \
+              git curl ca-certificates build-essential \
+              python3 python3-dev python3-setuptools python3-pip python3-pytest \
+              pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+              libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+              libevent-dev graphviz doxygen time >> /tmp/p12l2_apt_install.log 2>&1; then
+              echo "PASS_P12L2_APT_ATTEMPT=$attempt" >> /tmp/p12l2_apt_install.log
+              exit 0
+            fi
+          done
+          tail -50 /tmp/p12l2_apt_install.log
+          exit 1
+
+      - name: Checkout immutable preregistration and source ZIPs
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Authenticate P12K GitHub success, committed sources and original NO_GO
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p "episode_output/v05227_preflight/seed_$SEED"
+          git config --global --add safe.directory "$PWD"
+          python3 - <<'PY' > "episode_output/v05227_preflight/seed_${SEED}/P12K_PARENT_AUTH.log" 2>&1
+          import hashlib,json,os,pathlib,subprocess,urllib.request
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          seed=int(os.environ['SEED']);assert seed in range(24807,24813)
+          token=os.environ['GH_TOKEN'];assert token
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12L2-v05227'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=h),timeout=60) as r:return json.load(r)
+          run=get('/actions/runs/45195251299');artifact=get('/actions/artifacts/14828196070')
+          prev=get('/actions/runs/45203201890');prev_qc=get('/actions/artifacts/14841071760')
+          assert prev['status']=='completed' and prev['conclusion']=='success'
+          assert prev['head_sha']=='874b56196b4e73eb66df048f51ca5f5a05acb6f1'
+          assert prev['path'].endswith('/hcraf-stage1am-f3-p12l1-fresh-seed-physical-v0.52.26.yml')
+          assert prev_qc['digest']=='sha256:2f19592ab99492d6fd64cfc2330ec23ed989cfffc220385db3d2315636d9720c'
+          assert prev_qc['workflow_run']['id']==45203201890 and not prev_qc['expired']
+          subprocess.check_call(['git','merge-base','--is-ancestor',prev['head_sha'],'HEAD'])
+          assert run['status']=='completed' and run['conclusion']=='success'
+          assert run['head_sha']=='e9819bb1aeb9c786fe68061a97f02308a110c56d'
+          assert run['path'].endswith('/hcraf-stage1am-f3-p12k-prospective-replication-prereg-v0.52.25.yml')
+          assert artifact['digest']=='sha256:3860b50db9c56169ad0aee69dee0101b623ec03de490e692926e84ca308fab68'
+          assert not artifact['expired'] and artifact['workflow_run']['id']==45195251299
+          subprocess.check_call(['git','merge-base','--is-ancestor',run['head_sha'],'HEAD'])
+          zips=[
+           ('hcraf_stage1am_f3_p12_development_v05220_sources.zip','V05220_SOURCE_SHA256'),
+           ('hcraf_stage1am_f3_p12e_independent_prereg_v05219_sources.zip','V05219_SOURCE_SHA256'),
+           ('hcraf_stage1am_f3_p12g_seedblocked_dev_v05221_sources.zip','V05221_SOURCE_SHA256'),
+           ('hcraf_stage1am_f3_p12h_validation_v05222_sources.zip','V05222_SOURCE_SHA256'),
+           ('hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip','V05225_SOURCE_SHA256'),
+           ('hcraf_stage1am_f3_p12l1_physical_v05226_sources.zip','V05226_SOURCE_SHA256'),
+           ('hcraf_stage1am_f3_p12l2_physical_v05227_sources.zip','V05227_SOURCE_SHA256')]
+          for name,env in zips:
+              raw=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==os.environ[env],name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==raw,name
+              print('PASS_COMMITTED_SOURCE',name)
+          print('PASS_P12K_PREREG_RUN_ARTIFACT_COMMIT_AND_P12L2_ONLY_AUTHORIZATION')
+          PY
+          cat "episode_output/v05227_preflight/seed_${SEED}/P12K_PARENT_AUTH.log"
+
+      - name: Restore original v0.52.0 science-lock receipt (read-only)
+        id: old_lock
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          run-id: "43567814962"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/v0526_preflight/lock_artifact
+
+      - name: Download authenticated P12K preregistration receipt
+        id: p12k_receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-p12k-prereg-v05225-run-45195251299
+          run-id: "45195251299"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: p12l2_auth_p12k_receipt
+
+      - name: Restore unchanged P12F/P12G/P12H ancestors, then P12K and P12L2 overlays
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > "episode_output/v05227_preflight/seed_${SEED}/P12L2_SHA_SOURCE_RESTORE.log" 2>&1
+          import hashlib,io,json,os,pathlib,stat,zipfile
+          def sh(b):return hashlib.sha256(b).hexdigest()
+          parent=pathlib.Path('p12l2_auth_p12k_receipt/stage1am_f3_p12k_prospective_prereg_v05225/P12K_PREREG_RECEIPT.json')
+          assert parent.is_file(),'P12K_EXECUTED_RECEIPT_MISSING'
+          receipt=json.loads(parent.read_text())
+          assert receipt['GitHub_Run_ID']=='45195251299' and receipt['commit']=='e9819bb1aeb9c786fe68061a97f02308a110c56d'
+          assert receipt['status']=='PASS_P12K_PROSPECTIVE_PREREG_ONLY_ZERO_SIM'
+          assert receipt['planned_physical_cases']==432 and receipt['new_simulations']==0
+          assert receipt['P12K_matrix_sha256']=='bebf302b14bd2096e63b8915c640f2db43e069de990f3832a0a98258b6688cbc'
+          assert receipt['frozen_model_sha256']=='de46e2f5fcb052f96e920729664084ad0edd029cc4af88b2c5480209976a35d1'
+          assert receipt['prior_P12H_and_P12I_confirmatory_result']=='NO_GO_UNCHANGED'
+          print('PASS_AUTHENTICATED_P12K_RECEIPT_NOT_REWRITTEN')
+          # Historical helper already authenticates and safely restores ALL
+          # P12F/P12G/P12H dependencies, including prereg and NFD instrumentation.
+          hname='hcraf_stage1am_f3_p12h_validation_v05222_sources.zip'
+          with zipfile.ZipFile(hname) as z:
+              hpath='hcraf/episode/scripts/prepare_stage1am_f3_p12h_validation_v05222.py'
+              helper=z.read(hpath)
+          exec(compile(helper,hpath,'exec'),{'__name__':'__main__'})
+          # P12K and P12L2 remain disjoint from immutable historical overlays. P12L1 code is NOT executed here.
+          prior_name='hcraf_stage1am_f3_p12l1_physical_v05226_sources.zip'
+          prior_raw=pathlib.Path(prior_name).read_bytes()
+          assert sh(prior_raw)==os.environ['V05226_SOURCE_SHA256']
+          print('PASS_PREVIOUS_P12L1_IMMUTABLE_SOURCE_SHA')
+          for name,env,manifest in (
+           ('hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip','V05225_SOURCE_SHA256','HCRAF_F3_P12K_SOURCE_SHA256_v05225.json'),
+           ('hcraf_stage1am_f3_p12l2_physical_v05227_sources.zip','V05227_SOURCE_SHA256','HCRAF_F3_P12L2_SOURCE_SHA256_v05227.json')):
+              raw=pathlib.Path(name).read_bytes();assert sh(raw)==os.environ[env],name
+              with zipfile.ZipFile(io.BytesIO(raw)) as z:
+                  assert z.testzip() is None,name
+                  m=json.loads(z.read(manifest));names=z.namelist()
+                  assert len(names)==len(set(names)) and set(names)==set(m['files'])|{manifest}
+                  if 'p12l2' in name.lower():
+                      assert m['only_new_seed_blocks']==list(range(24807,24813))
+                      assert m['physical_cases']==72 and m['no_interim_AP'] is True
+                      assert m['F3_ready'] is False and m['GO_FREEZE'] is False
+                  for member,digest in m['files'].items():
+                      path=pathlib.PurePosixPath(member)
+                      assert path.parts[:2]==('hcraf','episode') and not path.is_absolute() and '..' not in path.parts and '\\' not in member
+                      assert not stat.S_ISLNK(z.getinfo(member).external_attr>>16)
+                      data=z.read(member);assert sh(data)==digest,member
+                      out=pathlib.Path(member);assert not out.exists(),('REFUSE_OVERWRITE',member)
+                      out.parent.mkdir(parents=True,exist_ok=True);out.write_bytes(data)
+                  print('PASS_VERIFIED_OVERLAY',name,len(m['files']))
+          PY
+          cat "episode_output/v05227_preflight/seed_${SEED}/P12L2_SHA_SOURCE_RESTORE.log"
+
+      - name: Verify historical P12K science fences, new 12 tests and exact seed preflight
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12k_prereg_v05225.py' -v \
+            > "episode_output/v05227_preflight/seed_${SEED}/P12K_LOCK_TESTS.log" 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts \
+            python3 -m unittest discover -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12l2_physical_v05227.py' -v \
+            > "episode_output/v05227_preflight/seed_${SEED}/P12L2_LOCK_TESTS.log" 2>&1
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/run_stage1am_f3_p12l2_physical_v05227.py \
+            --seed "$SEED" --preflight-only \
+            > "episode_output/v05227_preflight/seed_${SEED}/P12L2_PREFLIGHT_NO_SIM.json"
+          tail -16 "episode_output/v05227_preflight/seed_${SEED}/P12L2_LOCK_TESTS.log"
+          cat "episode_output/v05227_preflight/seed_${SEED}/P12L2_PREFLIGHT_NO_SIM.json"
+
+      - name: Compile isolated P12L2 C++ physical executor on pinned ndnSIM
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_p12l2_physical_v05227.sh \
+            > "episode_output/v05227_preflight/seed_${SEED}/P12L2_CPP_BUILD.log" 2>&1
+          tail -25 "episode_output/v05227_preflight/seed_${SEED}/P12L2_CPP_BUILD.log"
+
+      - name: Execute exactly 12 preregistered physical cases for one seed (NO AP)
+        id: simulate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/run_stage1am_f3_p12l2_physical_v05227.py \
+            --seed "$SEED" \
+            > "episode_output/v05227_preflight/seed_${SEED}/P12L2_PHYSICAL_12_RAW_ONLY.log" 2>&1
+          tail -20 "episode_output/v05227_preflight/seed_${SEED}/P12L2_PHYSICAL_12_RAW_ONLY.log"
+
+      - name: Always preserve science-locks and job-step receipt even on failure
+        if: always()
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          OLD_LOCK: ${{ steps.old_lock.outcome }}
+          P12K_RECEIPT: ${{ steps.p12k_receipt.outcome }}
+          RESTORE: ${{ steps.restore.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          SIMULATE: ${{ steps.simulate.outcome }}
+        run: |
+          set -u
+          mkdir -p "episode_output/v05227_preflight/seed_$SEED"
+          {
+            echo "P12L2_SEED=$SEED RUN=$GITHUB_RUN_ID ATTEMPT=$GITHUB_RUN_ATTEMPT SHA=$GITHUB_SHA"
+            echo "parent=$PARENT old_lock=$OLD_LOCK receipt=$P12K_RECEIPT restore=$RESTORE tests=$TESTS build=$BUILD simulate=$SIMULATE"
+            echo 'P12K prereg 45195251299; P12L1 prior success 45203201890; consumed Validation 24601..24604; Heldout 24701..24704 fully sealed.'
+            echo 'No model fits, no interim AP scoring, no selective stopping, no subgroup case exclusion. P12L1 raw data not analyzed.'
+            echo 'Congestion=null FutureCongestion=null F3_ready=false GO_FREEZE=false training_ready=false heldout_release_authorized=false'
+          } > "episode_output/v05227_preflight/seed_${SEED}/P12L2_SCIENCE_LOCKS_AND_STEPS.txt"
+
+      - name: Always upload technical and scientific step logs for this seed
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12l2-preflight-seed-${{ matrix.seed }}-v05227-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: episode_output/v05227_preflight/seed_${{ matrix.seed }}/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload exactly one verified physical raw seed archive and receipt
+        if: ${{ steps.simulate.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12l2-seed-${{ matrix.seed }}-v05227-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          path: episode_output/stage1am_f3_p12l2_physical_v05227/seed_${{ matrix.seed }}/
+          if-no-files-found: error
+          retention-days: 30
+
+  p12l2_six_seed_raw_qc_only:
+    name: "Six independent raw archives, SHA/Causal QC, NO interim AP (batch 2)"
+    needs: p12l2_physical_seed
+    if: ${{ needs.p12l2_physical_seed.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout immutable P12L2 batch-QC script
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Download all six seed artifacts from this run only
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hcraf-f3-p12l2-seed-*-v05227-run-${{ github.run_id }}-attempt-${{ github.run_attempt }}
+          merge-multiple: false
+          path: p12l2_authenticated_six_seed_archives
+      - name: Verify immutable audit script then all 6 ZIPs, 2886 raw SHA checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,zipfile,json,pathlib,subprocess
+          name='hcraf_stage1am_f3_p12l2_physical_v05227_sources.zip'
+          raw=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='dfda5f3ef23379098ade996e1f31f68a4173b62dfc6c26a5b08e7fd65dc664ff'
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12L2_SOURCE_SHA256_v05227.json'))
+              path='hcraf/episode/scripts/audit_stage1am_f3_p12l2_batch_v05227.py'
+              content=z.read(path)
+              assert hashlib.sha256(content).hexdigest()==m['files'][path]
+              pathlib.Path(path).parent.mkdir(parents=True,exist_ok=True)
+              assert not pathlib.Path(path).exists()
+              pathlib.Path(path).write_bytes(content)
+          PY
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12l2_batch_v05227.py \
+            --input p12l2_authenticated_six_seed_archives \
+            --output P12L2_SIX_SEED_RAW_QC_ONLY_v05227.json
+          cat P12L2_SIX_SEED_RAW_QC_ONLY_v05227.json
+      - name: Upload QC-only report; zero model fits and zero AP peeks
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12l2-six-seed-raw-qc-v05227-run-${{ github.run_id }}
+          path: P12L2_SIX_SEED_RAW_QC_ONLY_v05227.json
+          if-no-files-found: error
+          retention-days: 30
