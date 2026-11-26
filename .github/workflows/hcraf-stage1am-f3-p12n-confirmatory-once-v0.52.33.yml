@@ -1,0 +1,180 @@
+name: HCRAF F3 P12N One-Time Preregistered 36-Seed Confirmatory AP (v0.52.33)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-stage1am-f3-p12n-confirmatory-v05233
+  cancel-in-progress: false
+jobs:
+  extract:
+    name: Evidence-locked non-scoring extraction batch ${{ matrix.batch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {batch: 1, parent_run: 45203201890, version: '05226'}
+          - {batch: 2, parent_run: 45595506756, version: '05227'}
+          - {batch: 3, parent_run: 45618979484, version: '05228'}
+          - {batch: 4, parent_run: 45653046932, version: '05229'}
+          - {batch: 5, parent_run: 45683873566, version: '05230'}
+          - {batch: 6, parent_run: 45760750646, version: '05231'}
+    steps:
+      - name: Checkout exact source provenance
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Authenticate P12M success and locked analysis source prior to any data use
+        env:
+          GH_TOKEN: ${{ github.token }}
+          P12N_SOURCE_SHA256: '26d05e75ac61e579741e2384326313d3016adec8e001dc93ddbbc78144a69c5b'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,subprocess,urllib.request,zipfile,pathlib
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,
+                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                           'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12N-confirmatory'})
+              with urllib.request.urlopen(req,timeout=60) as response:return json.load(response)
+          run=get('/actions/runs/45788559718')
+          artifact=get('/actions/artifacts/15102130997')
+          assert run['status']=='completed' and run['conclusion']=='success'
+          assert run['head_sha']=='b4142db920b54ed7938b28e4c2113bad59b3bffe'
+          assert run['path'].endswith('/hcraf-stage1am-f3-p12m-integrated-36-seed-raw-qc-v0.52.32.yml')
+          assert artifact['digest']=='sha256:5d9a96be23a672532f0278dadf344c96e2ad3d8b47a32cdc25128ffccc7b8ca2'
+          assert artifact['workflow_run']['id']==45788559718 and not artifact['expired']
+          subprocess.check_call(['git','merge-base','--is-ancestor',run['head_sha'],'HEAD'])
+          name='hcraf_stage1am_f3_p12n_confirmatory_v05233_sources.zip'
+          data=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(data).hexdigest()==os.environ['P12N_SOURCE_SHA256']
+          assert subprocess.check_output(['git','show','HEAD:'+name])==data
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              manifest=json.loads(z.read('HCRAF_F3_P12N_SOURCE_SHA256_v05233.json'))
+              assert set(z.namelist())==set(manifest['files'])|{'HCRAF_F3_P12N_SOURCE_SHA256_v05233.json'}
+              for path,digest in manifest['files'].items():
+                  assert hashlib.sha256(z.read(path)).hexdigest()==digest,path
+              z.extractall('.')
+          print('PASS_P12N_P12M_LOCKED_CHAIN_AND_SOURCE_COMMIT')
+          PY
+      - name: Test scoring science fences without prospective AP
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s hcraf/episode/tests -p test_stage1am_f3_p12n_confirmatory_v05233.py -v
+      - name: Download exactly six raw artifacts from authenticated source run
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          run-id: ${{ matrix.parent_run }}
+          pattern: hcraf-f3-p12l${{ matrix.batch }}-seed-*-v${{ matrix.version }}-run-${{ matrix.parent_run }}-attempt-1
+          path: p12n_authenticated_raw_batch
+          merge-multiple: false
+      - name: Recheck original P12M raw seed auditor (all 481 x 6 SHA)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 "hcraf/episode/docs/1AM/F3_P12N_CONFIRMATORY_v0.52.33/P12M_original_auditors/audit_stage1am_f3_p12l${{ matrix.batch }}_batch_v${{ matrix.version }}.py" \
+            --input p12n_authenticated_raw_batch --output "P12N_BATCH_${{ matrix.batch }}_ORIGINAL_QC_REPLAY.json"
+      - name: Extract 4608 raw features and labels per batch (NO AP and NO model scoring)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/run_stage1am_f3_p12n_confirmatory_v05233.py extract \
+            --batch "${{ matrix.batch }}" --input p12n_authenticated_raw_batch \
+            --output "P12N_BATCH_${{ matrix.batch }}_RAW_FEATURES_LABELS_ONLY.csv" \
+            --receipt "P12N_BATCH_${{ matrix.batch }}_EXTRACT_ONLY_RECEIPT.json"
+      - name: Upload authenticated non-scoring batch rows only
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12n-batch-${{ matrix.batch }}-v05233-run-${{ github.run_id }}
+          path: |
+            P12N_BATCH_${{ matrix.batch }}_RAW_FEATURES_LABELS_ONLY.csv
+            P12N_BATCH_${{ matrix.batch }}_EXTRACT_ONLY_RECEIPT.json
+            P12N_BATCH_${{ matrix.batch }}_ORIGINAL_QC_REPLAY.json
+          retention-days: 30
+          if-no-files-found: error
+  score_once:
+    name: Exactly once 36-seed P12K-locked AP and 10000 paired whole-seed bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    needs: extract
+    steps:
+      - name: Checkout authentic immutable pre-registered model and code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Authenticate parent before final scoring
+        env:
+          GH_TOKEN: ${{ github.token }}
+          P12N_SOURCE_SHA256: '26d05e75ac61e579741e2384326313d3016adec8e001dc93ddbbc78144a69c5b'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,subprocess,urllib.request,zipfile,pathlib
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,
+                headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                         'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12N-confirmatory'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          run=get('/actions/runs/45788559718');a=get('/actions/artifacts/15102130997')
+          assert run['status']=='completed' and run['conclusion']=='success'
+          assert run['head_sha']=='b4142db920b54ed7938b28e4c2113bad59b3bffe'
+          assert run['path'].endswith('/hcraf-stage1am-f3-p12m-integrated-36-seed-raw-qc-v0.52.32.yml')
+          assert a['digest']=='sha256:5d9a96be23a672532f0278dadf344c96e2ad3d8b47a32cdc25128ffccc7b8ca2'
+          assert a['workflow_run']['id']==45788559718 and not a['expired']
+          subprocess.check_call(['git','merge-base','--is-ancestor',run['head_sha'],'HEAD'])
+          name='hcraf_stage1am_f3_p12n_confirmatory_v05233_sources.zip'
+          raw=pathlib.Path(name).read_bytes();assert hashlib.sha256(raw).hexdigest()==os.environ['P12N_SOURCE_SHA256']
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12N_SOURCE_SHA256_v05233.json'))
+              assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12N_SOURCE_SHA256_v05233.json'}
+              for path,digest in m['files'].items():
+                  assert hashlib.sha256(z.read(path)).hexdigest()==digest,path
+              z.extractall('.')
+          print('PASS_P12N_FINAL_ONE_TIME_AUTHENTICATED_SOURCE')
+          PY
+      - name: Download all six verified extract artifacts from this run only
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hcraf-f3-p12n-batch-*-v05233-run-${{ github.run_id }}
+          path: p12n_six_authenticated_batches
+          merge-multiple: false
+      - name: Score 27648 episodes ONCE; compute 10000 paired whole-seed bootstrap draws
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/run_stage1am_f3_p12n_confirmatory_v05233.py score-once \
+             --input p12n_six_authenticated_batches \
+             --output P12N_36_SEED_ONCE_ONLY_CONFIRMATORY_P12K_REPORT.json
+          test -s P12N_36_SEED_ONCE_ONLY_CONFIRMATORY_P12K_REPORT.json
+          python3 - <<'PY'
+          import json
+          r=json.load(open('P12N_36_SEED_ONCE_ONLY_CONFIRMATORY_P12K_REPORT.json'))
+          assert r['F3_ready'] is False and r['GO_FREEZE'] is False
+          assert r['heldout_rows_read']==0 and r['model_fits']==0
+          assert r['scored_episodes']==27648 and r['physical_cases_authenticated_from_P12M']==432
+          print('PASS_P12N_FINAL_REPORT_NO_AUTOMATIC_F3_GO',r['status'])
+          PY
+      - name: Preserve immutable once-only analysis report regardless of GO/NO_GO
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12n-one-time-preregistered-36-seed-analysis-v05233-run-${{ github.run_id }}
+          path: P12N_36_SEED_ONCE_ONLY_CONFIRMATORY_P12K_REPORT.json
+          retention-days: 30
+          if-no-files-found: error
