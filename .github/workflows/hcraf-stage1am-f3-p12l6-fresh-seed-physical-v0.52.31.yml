@@ -37,7 +37,7 @@ jobs:
       V05228_SOURCE_SHA256: "e1f6df221367409014b02d69041163cb4ef28f98f455d8a48f1fdfb87119ceae"
       V05229_SOURCE_SHA256: "b88e5b0169efc5f61621ea5c029f2295a2dcf759df24fede053c064e0e21c4ed"
       V05230_SOURCE_SHA256: "811044f84cc3c61270d136f24eebb40cb9cb41ad1df99813493582420d9f399a"
-      V05231_SOURCE_SHA256: "6e319e4690376d34a038932986861ced5ad32b76b44f8951fda6197543f0179e"
+      V05231_SOURCE_SHA256: "f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265"
       SEED: "${{ matrix.seed }}"
     steps:
       - name: Install proven bounded-retry ndnSIM prerequisites
@@ -122,7 +122,7 @@ jobs:
            ('hcraf_stage1am_f3_p12l3_physical_v05228_sources.zip','V05228_SOURCE_SHA256'),
            ('hcraf_stage1am_f3_p12l4_physical_v05229_sources.zip','V05229_SOURCE_SHA256'),
            ('hcraf_stage1am_f3_p12l5_physical_v05230_sources.zip','V05230_SOURCE_SHA256'),
-           ('hcraf_stage1am_f3_p12l6_physical_v05231_sources.zip','V05231_SOURCE_SHA256')]
+           ('hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip','V05231_SOURCE_SHA256')]
           for name,env in zips:
               raw=pathlib.Path(name).read_bytes()
               assert hashlib.sha256(raw).hexdigest()==os.environ[env],name
@@ -194,7 +194,7 @@ jobs:
           print('PASS_PREVIOUS_P12L5_IMMUTABLE_SOURCE_SHA')
           for name,env,manifest in (
            ('hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip','V05225_SOURCE_SHA256','HCRAF_F3_P12K_SOURCE_SHA256_v05225.json'),
-           ('hcraf_stage1am_f3_p12l6_physical_v05231_sources.zip','V05231_SOURCE_SHA256','HCRAF_F3_P12L6_SOURCE_SHA256_v05231.json')):
+           ('hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip','V05231_SOURCE_SHA256','HCRAF_F3_P12L6_SOURCE_SHA256_v05231.json')):
               raw=pathlib.Path(name).read_bytes();assert sh(raw)==os.environ[env],name
               with zipfile.ZipFile(io.BytesIO(raw)) as z:
                   assert z.testzip() is None,name
@@ -316,9 +316,9 @@ jobs:
           set -euo pipefail
           python3 - <<'PY'
           import hashlib,zipfile,json,pathlib,subprocess
-          name='hcraf_stage1am_f3_p12l6_physical_v05231_sources.zip'
+          name='hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip'
           raw=pathlib.Path(name).read_bytes()
-          assert hashlib.sha256(raw).hexdigest()=='6e319e4690376d34a038932986861ced5ad32b76b44f8951fda6197543f0179e'
+          assert hashlib.sha256(raw).hexdigest()=='f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265'
           assert subprocess.check_output(['git','show','HEAD:'+name])==raw
           with zipfile.ZipFile(name) as z:
               assert z.testzip() is None
