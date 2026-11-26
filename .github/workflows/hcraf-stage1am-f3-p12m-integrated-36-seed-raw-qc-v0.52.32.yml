@@ -1,0 +1,125 @@
+name: HCRAF F3 P12M Independent 36-Seed Integrated Raw QC (v0.52.32)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12m-integrated-36-seed-raw-qc
+  cancel-in-progress: false
+jobs:
+  cross_validate_batch:
+    name: Independent raw QC batch ${{ matrix.batch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {batch: 1, run: 45203201890, version: "26", pattern: "hcraf-f3-p12l1-seed-*-v05226-run-45203201890-attempt-1"}
+          - {batch: 2, run: 45595506756, version: "27", pattern: "hcraf-f3-p12l2-seed-*-v05227-run-45595506756-attempt-1"}
+          - {batch: 3, run: 45618979484, version: "28", pattern: "hcraf-f3-p12l3-seed-*-v05228-run-45618979484-attempt-1"}
+          - {batch: 4, run: 45653046932, version: "29", pattern: "hcraf-f3-p12l4-seed-*-v05229-run-45653046932-attempt-1"}
+          - {batch: 5, run: 45683873566, version: "30", pattern: "hcraf-f3-p12l5-seed-*-v05230-run-45683873566-attempt-1"}
+          - {batch: 6, run: 45760750646, version: "31", pattern: "hcraf-f3-p12l6-seed-*-v05231-run-45760750646-attempt-1"}
+    steps:
+      - name: Checkout committed immutable source ZIP
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Authenticate and unpack immutable P12M source bundle
+        shell: bash
+        env:
+          EXPECTED_SHA256: "15a44efb63480b5f95ab3e9553a3272188cfb65505a0c8e76bc404cd3bf8456d"
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib,hashlib,zipfile,subprocess,json
+          name="hcraf_stage1am_f3_p12m_integrated_raw_audit_v05232_sources.zip"
+          data=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(data).hexdigest()=="15a44efb63480b5f95ab3e9553a3272188cfb65505a0c8e76bc404cd3bf8456d"
+          assert subprocess.check_output(['git','show','HEAD:'+name])==data
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              manifest=json.loads(z.read('HCRAF_F3_P12M_SOURCE_SHA256_v05232.json'))
+              assert manifest['file_count']==len(manifest['files'])
+              assert set(z.namelist())==set(manifest['files'])|{'HCRAF_F3_P12M_SOURCE_SHA256_v05232.json'}
+              for path,digest in manifest['files'].items():
+                  assert hashlib.sha256(z.read(path)).hexdigest()==digest,path
+              z.extractall('.')
+          print('PASS_P12M_ALL_SOURCE_SHA_LOCKED')
+          PY
+      - name: Re-download six original raw seed archives from immutable parent run
+        uses: actions/download-artifact@v4
+        with:
+          repository: ${{ github.repository }}
+          run-id: ${{ matrix.run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          pattern: ${{ matrix.pattern }}
+          path: p12m_raw_batch_${{ matrix.batch }}
+          merge-multiple: false
+      - name: Authenticate parent chain and re-audit every raw file without AP
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BATCH: ${{ matrix.batch }}
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12m_integrated_v05232.py batch \
+            --batch "$BATCH" --input "p12m_raw_batch_${BATCH}" \
+            --output "P12M_BATCH_${BATCH}_REPEAT_QC.json"
+          test -s "P12M_BATCH_${BATCH}_REPEAT_QC.json"
+      - name: Upload independent batch QC receipt, never raw scores
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12m-repeat-raw-batch-${{ matrix.batch }}-v05232-run-${{ github.run_id }}
+          path: P12M_BATCH_${{ matrix.batch }}_REPEAT_QC.json
+          if-no-files-found: error
+          retention-days: 30
+  cross_batch_final_gate:
+    name: Confirm 36 distinct original seeds, 432 cases, NO AP
+    needs: cross_validate_batch
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Download all six authenticated batch QC receipts from this run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hcraf-f3-p12m-repeat-raw-batch-*-v05232-run-${{ github.run_id }}
+          path: p12m_batch_qc_receipts
+          merge-multiple: false
+      - name: Verify immutable QC script and sources, aggregate independently
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import zipfile,pathlib,hashlib,subprocess,json
+          name="hcraf_stage1am_f3_p12m_integrated_raw_audit_v05232_sources.zip"
+          data=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(data).hexdigest()=="15a44efb63480b5f95ab3e9553a3272188cfb65505a0c8e76bc404cd3bf8456d"
+          assert subprocess.check_output(['git','show','HEAD:'+name])==data
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              manifest=json.loads(z.read('HCRAF_F3_P12M_SOURCE_SHA256_v05232.json'))
+              assert set(z.namelist())==set(manifest['files'])|{'HCRAF_F3_P12M_SOURCE_SHA256_v05232.json'}
+              for path,digest in manifest['files'].items():
+                  assert hashlib.sha256(z.read(path)).hexdigest()==digest,path
+              z.extractall('.')
+          PY
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12m_integrated_v05232.py aggregate \
+            --input p12m_batch_qc_receipts --output P12M_ALL_36_SEED_INTEGRATED_QC_ONLY_v05232.json
+          cat P12M_ALL_36_SEED_INTEGRATED_QC_ONLY_v05232.json
+      - name: Upload final no-AP provenance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12m-integrated-36-seed-qc-v05232-run-${{ github.run_id }}
+          path: P12M_ALL_36_SEED_INTEGRATED_QC_ONLY_v05232.json
+          if-no-files-found: error
+          retention-days: 30
