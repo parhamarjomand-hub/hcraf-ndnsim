@@ -168,7 +168,7 @@ jobs:
               for member,h in m['files'].items():
                 path=pathlib.PurePosixPath(member)
                 assert path.parts[:2]==('hcraf','episode') and '..' not in path.parts and not path.is_absolute()
-                assert '\' not in member and not stat.S_ISLNK(z.getinfo(member).external_attr>>16)
+                assert chr(92) not in member and not stat.S_ISLNK(z.getinfo(member).external_attr>>16)
                 contents=z.read(member);assert sha(contents)==h
                 dest=pathlib.Path(member);assert not dest.exists(),('OVERLAY_OVERWRITE',member)
                 dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(contents)
