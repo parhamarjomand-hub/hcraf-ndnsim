@@ -1,0 +1,134 @@
+name: HCRAF F3 P12U Read-Only NFD Hook Provenance and B1 Adapter Gate (v0.52.40)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  read_only_native_hook_audit:
+    runs-on: ubuntu-24.04
+    env:
+      P12U_SOURCE_SHA256: "469afe7567e375db8d07d16802ddde6dbf68bfd1aadd15c4f7d6ddd3761b401d"
+      P12R_SOURCE_SHA256: "dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30"
+      P12S_SOURCE_SHA256: "587d792d7e7e7f1837da8df0490b6fba5a0394248917ae2f0b570bb925b594e0"
+      P12T_SOURCE_SHA256: "08b76621c5cb371fe04955d42b27f1a682f883f058ec06f050c60c42724fafa1"
+      P12T_ARTIFACT_SHA256: "42b4299bdb6da37fe8c900b6105275f287a41b23b3b2a922d349aafaf8b2cc5e"
+      P12T_PARENT_RUN_ID: "45844118722"
+      P12T_PARENT_HEAD_SHA: "6e67ea60c20790cbefdd1a9aec717ff58b65b3e8"
+      P12T_PARENT_ARTIFACT_ID: "15133361443"
+    steps:
+      - name: Checkout immutable study source and history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Authenticate exact P12T parent artifacts and three prior source ZIPs; no simulation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p12u_original_locked_evidence
+          python3 - <<'PYAUTH'
+          import hashlib,io,json,os,pathlib,stat,subprocess,urllib.request,zipfile
+          def sha(b):return hashlib.sha256(b).hexdigest()
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12U-native-hook-audit'}
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=headers)
+              with urllib.request.urlopen(req,timeout=90) as r:return json.load(r)
+          parent=get('/actions/runs/45844118722')
+          assert parent['status']=='completed' and parent['conclusion']=='success'
+          assert parent['head_sha']==os.environ['P12T_PARENT_HEAD_SHA']
+          assert parent['path'].endswith('/hcraf-stage1am-f3-p12t-native-ndnsim-dev-sentinel-v0.52.39.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',parent['head_sha'],'HEAD'])
+          artifact=get('/actions/artifacts/15133361443')
+          assert artifact['digest']=='sha256:'+os.environ['P12T_ARTIFACT_SHA256']
+          assert artifact['workflow_run']['id']==45844118722 and not artifact['expired']
+          name='hcraf-f3-p12t-one-dev-native-sentinel-v05239-run-45844118722'
+          assert artifact['name']==name
+          for name,env in [
+              ('hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip','P12R_SOURCE_SHA256'),
+              ('hcraf_stage1am_f3_p12s_local_instrument_v05238_sources.zip','P12S_SOURCE_SHA256'),
+              ('hcraf_stage1am_f3_p12t_native_dev_smoke_v05239_sources.zip','P12T_SOURCE_SHA256'),
+              ('hcraf_stage1am_f3_p12u_native_hook_provenance_v05240_sources.zip','P12U_SOURCE_SHA256')]:
+              b=pathlib.Path(name).read_bytes()
+              assert sha(b)==os.environ[env],name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==b,name
+              print('PASS_P12U_LOCKED_SOURCE',name)
+          source='hcraf_stage1am_f3_p12u_native_hook_provenance_v05240_sources.zip'
+          with zipfile.ZipFile(source) as z:
+              assert z.testzip() is None
+              manifest=json.loads(z.read('HCRAF_F3_P12U_SOURCE_SHA256_v05240.json'))
+              assert set(z.namelist())==set(manifest['files'])|{'HCRAF_F3_P12U_SOURCE_SHA256_v05240.json'}
+              for name,digest in manifest['files'].items():
+                  path=pathlib.PurePosixPath(name)
+                  assert path.parts[:2]==('hcraf','episode') and '..' not in path.parts and not path.is_absolute()
+                  assert chr(92) not in name and not stat.S_ISLNK(z.getinfo(name).external_attr>>16)
+                  b=z.read(name);assert sha(b)==digest,name
+                  dest=pathlib.Path(name);assert not dest.exists(),('SOURCE_OVERWRITE',name)
+                  dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(b)
+          # Restore exactly one *previously authenticated* P12S header as a build-only dependency.
+          with zipfile.ZipFile('hcraf_stage1am_f3_p12s_local_instrument_v05238_sources.zip') as z:
+              assert z.testzip() is None
+              hname='hcraf/episode/src/hcraf-stage1am-f3-p12s-local-causal-meter-v05238.hpp'
+              dest=pathlib.Path(hname);assert not dest.exists()
+              dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(z.read(hname))
+          # GitHub artifact REST returns original ZIP bytes, NOT a reconstructed download-artifact directory.
+          req=urllib.request.Request('https://api.github.com/repos/'+repo+'/actions/artifacts/15133361443/zip',headers=headers)
+          with urllib.request.urlopen(req,timeout=120) as r: raw=r.read()
+          assert sha(raw)==os.environ['P12T_ARTIFACT_SHA256'],'P12T_GITHUB_ZIP_SHA'
+          dest=pathlib.Path('p12u_original_locked_evidence/P12T_NATIVE_DEV_SENTINEL_45844118722.zip')
+          dest.write_bytes(raw)
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None
+              assert 'P12T_NATIVE_INTEGRATION_SENTINEL_RECEIPT_v05239.json' in z.namelist()
+          print('PASS_P12U_AUTHENTICATED_ONE_FIXED_PHYSICAL_ARTIFACT_NO_NEW_SIM')
+          PYAUTH
+      - name: Compile and execute standalone C++17 B1 hook adapter tests; NOT NFD integration
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p12u_audit_output
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            -I hcraf/episode/src \
+            hcraf/episode/tests/test_stage1am_f3_p12u_nfd_adapter_v05240.cpp \
+            -o /tmp/p12u-native-hook-adapter
+          /tmp/p12u-native-hook-adapter | tee p12u_audit_output/standalone_cpp17_tests.log
+      - name: Independently verify original 128 native decisions and all missing B1 hooks
+        shell: bash
+        env:
+          P12U_TEST_RAW_PATH: p12u_original_locked_evidence/P12T_NATIVE_DEV_SENTINEL_45844118722.zip
+          P12U_TEST_P12R_PATH: hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip
+          P12U_TEST_P12S_PATH: hcraf_stage1am_f3_p12s_local_instrument_v05238_sources.zip
+          P12U_TEST_P12T_PATH: hcraf_stage1am_f3_p12t_native_dev_smoke_v05239_sources.zip
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover \
+            -s hcraf/episode/tests \
+            -p 'test_stage1am_f3_p12u_native_hook_provenance_v05240.py' -v \
+            2>&1 | tee p12u_audit_output/python_frozen_evidence_tests.log
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12u_native_hook_provenance_v05240.py \
+            --p12t-artifact "$P12U_TEST_RAW_PATH" \
+            --p12r-source "$P12U_TEST_P12R_PATH" \
+            --p12s-source "$P12U_TEST_P12S_PATH" \
+            --p12t-source "$P12U_TEST_P12T_PATH" \
+            --output p12u_audit_output/P12U_128_DECISION_NATIVE_HOOK_GAP_QC_v05240.json
+          python3 - <<'PYGATE'
+          import json
+          x=json.load(open('p12u_audit_output/P12U_128_DECISION_NATIVE_HOOK_GAP_QC_v05240.json'))
+          assert x['status']=='PASS_P12U_P12T_IMMUTABLE_NATIVE_HOOK_GAP_QC_ONLY'
+          assert x['decisions_authenticated']==128 and x['native_first_five_features_count']==5
+          assert x['missing_native_last_seven_features_count']==7
+          assert not x['online_last_seven_NFD_hooks_wired'] and not x['B1_complete_and_valid']
+          assert x['model_fits']==x['confirmation_seed_reads']==x['heldout_reads']==x['new_simulations']==0
+          assert not x['F3_ready'] and not x['GO_FREEZE'] and not x['training_ready']
+          assert not x['Stage1AO_or_NSGAIII_authorized'] and not x['new_AP_computed']
+          print('PASS_P12U_NATIVE_PROVENANCE_EVIDENCE_ONLY_NO_F3_GO')
+          PYGATE
+      - name: Upload immutable 128-decision diagnostic and adapter test logs (not model/GO)
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12u-native-nfd-hook-gap-audit-only-v05240-run-${{ github.run_id }}
+          path: p12u_audit_output/
+          if-no-files-found: error
+          retention-days: 30
