@@ -10,7 +10,7 @@ jobs:
     timeout-minutes: 15
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      P12W_SOURCE_SHA256: "5314163efb7f9734809487389e8c32c316a5109720e0b764b94740feb2f1a95c"
+      P12W_SOURCE_SHA256: "df14191adc42d236495620690119e0b15199161703882f33ba928edfa4a46a3b"
       P12W_ORIGINAL_ARTIFACT: "HCRAF_P12V_ORIGINAL_NATIVE_ARTIFACT_45868303602.zip"
       P12W_ARTIFACT_SHA256: "4d63c630f405ee6c7bca64906683888666ca7f3eb15bbc13d7346fc9b7edda49"
     steps:
@@ -42,12 +42,12 @@ jobs:
           assert a['digest']=='sha256:'+os.environ['P12W_ARTIFACT_SHA256']
           for name,expected in [
             (os.environ['P12W_ORIGINAL_ARTIFACT'],os.environ['P12W_ARTIFACT_SHA256']),
-            ('hcraf_stage1am_f3_p12w_causal_readonly_gap_v05242_sources.zip',os.environ['P12W_SOURCE_SHA256'])]:
+            ('hcraf_stage1am_f3_p12w_causal_readonly_gap_v05242_manifest_hotfix_sources.zip',os.environ['P12W_SOURCE_SHA256'])]:
               b=pathlib.Path(name).read_bytes()
               assert sha(b)==expected,name
               assert subprocess.check_output(['git','show','HEAD:'+name])==b,name
               print('PASS_P12W_SOURCE_ORIGINAL_BYTES',name)
-          with zipfile.ZipFile('hcraf_stage1am_f3_p12w_causal_readonly_gap_v05242_sources.zip') as z:
+          with zipfile.ZipFile('hcraf_stage1am_f3_p12w_causal_readonly_gap_v05242_manifest_hotfix_sources.zip') as z:
               assert z.testzip() is None
               m=json.loads(z.read('HCRAF_F3_P12W_SOURCE_SHA256_v05242.json'))
               assert m['status']=='READ_ONLY_AUDIT_ONLY'
