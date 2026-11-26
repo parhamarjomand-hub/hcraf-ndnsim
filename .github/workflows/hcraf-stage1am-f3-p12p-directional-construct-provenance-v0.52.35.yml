@@ -1,0 +1,106 @@
+name: HCRAF F3 P12P Read-Only Directional Construct Provenance (v0.52.35)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12p-directional-provenance-v05235
+  cancel-in-progress: false
+jobs:
+  source_directional_audit:
+    name: Frozen source, fixed seed 24831 physical trace, NO AP OR FIT
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact committed source snapshot
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Authenticate parent run, artifacts, untouched source ZIPs and P12P package
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUTH'
+          import hashlib,json,os,pathlib,subprocess,urllib.request,zipfile
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          h={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12P-v05235'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=h),timeout=60) as r:return json.load(r)
+          for run_id,commit,wf in [
+            (45760750646,'b212ff385da1bf0bb67a9130832f778f72d97bdf','hcraf-stage1am-f3-p12l6-fresh-seed-physical-v0.52.31.yml'),
+            (45794162960,'48a12f5e08e21dd0e69dc1de7dc33254172c2649','hcraf-stage1am-f3-p12n-confirmatory-once-v0.52.33.yml'),
+            (45826880462,'6e76902ca048530b8dfd4b1ed9b214c3bfbe4936','hcraf-stage1am-f3-p12o-postconfirmatory-readonly-audit-v0.52.34.yml')]:
+              a=get('/actions/runs/'+str(run_id))
+              assert a['conclusion']=='success' and a['status']=='completed'
+              assert a['head_sha']==commit and a['path'].endswith('/'+wf)
+              subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+          for aid,expected,runid in [
+            (15119613661,'fc9dc32ddfb7ffc42da3ef26609e7ab529de7a115a8c516cbe58390ad5e0b4fd',45826880462),
+            (15091103503,'371ecc8bbc3c808d6ccd6940c4fc3d70d8d75cfb143e89f6a4778b25efbb3871',45760750646)]:
+              a=get('/actions/artifacts/'+str(aid))
+              assert a['workflow_run']['id']==runid and a['digest']=='sha256:'+expected and not a['expired']
+          for name,expected in [
+            ('hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip','f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265'),
+            ('hcraf_stage1am_f3_p12p_directional_provenance_v05235_sources.zip','06001519a0cae556d2297a72d6ce16e30946fc28c3dba498cdb89cb1731963f2')]:
+              data=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(data).hexdigest()==expected,name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==data,name
+          with zipfile.ZipFile('hcraf_stage1am_f3_p12p_directional_provenance_v05235_sources.zip') as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12P_SOURCE_SHA256_v05235.json'))
+              assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12P_SOURCE_SHA256_v05235.json'}
+              for path,digest in m['files'].items():
+                  assert hashlib.sha256(z.read(path)).hexdigest()==digest,path
+              z.extractall('.')
+          print('PASS_P12P_PARENT_AND_SOURCE_SHA_LOCKS')
+          PYAUTH
+      - name: Run P12P read-only fail-closed tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12p_directional_provenance_v05235.py' -v
+      - name: Download original P12O audit result
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          run-id: 45826880462
+          name: hcraf-f3-p12o-independent-construct-review-v05234-run-45826880462
+          path: p12p_locked_p12o_report
+      - name: Download original fixed sentinel P12L6 physical seed 24831
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          run-id: 45760750646
+          name: hcraf-f3-p12l6-seed-24831-v05231-run-45760750646-attempt-1
+          path: p12p_locked_seed_24831
+      - name: Audit immutable source-to-physical directional provenance without fitting or scoring
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12p_directional_provenance_v05235.py \
+            --l6-source hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip \
+            --p12o-report p12p_locked_p12o_report/P12O_36_SEED_POSTCONFIRMATORY_READ_ONLY_AUDIT_v05234.json \
+            --seed-dir p12p_locked_seed_24831 \
+            --output P12P_DIRECTIONAL_PROVENANCE_READ_ONLY_v05235.json
+          python3 - <<'PYQC'
+          import json
+          r=json.load(open('P12P_DIRECTIONAL_PROVENANCE_READ_ONLY_v05235.json'))
+          assert r['status']=='PASS_P12P_SOURCE_AND_SENTINEL_TRACE_CONSTRUCT_REVIEW_STILL_REQUIRED'
+          assert r['new_AP_computed'] is False and r['model_fits']==0 and r['new_bootstrap_computed'] is False
+          assert r['F3_ready'] is False and r['GO_FREEZE'] is False and r['heldout_reads']==0
+          print('PASS_P12P_READONLY_CONSTRUCT_REVIEW_NO_F3_GO')
+          PYQC
+      - name: Upload read-only provenance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12p-directional-construct-review-v05235-run-${{ github.run_id }}
+          path: P12P_DIRECTIONAL_PROVENANCE_READ_ONLY_v05235.json
+          if-no-files-found: error
+          retention-days: 30
