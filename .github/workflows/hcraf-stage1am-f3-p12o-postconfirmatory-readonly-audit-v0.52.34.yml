@@ -1,0 +1,144 @@
+name: HCRAF F3 P12O Independent Post-Confirmatory Construct Audit (v0.52.34)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12o-readonly-postconfirmatory-v05234
+  cancel-in-progress: false
+jobs:
+  independent_readonly_audit:
+    name: SHA-locked 36-seed source and construct audit (NO AP/NO FIT/NO HELDOUT)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout immutable source history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Authenticate preregistered chain, P12N analysis, six source artifacts and P12O ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+          P12O_SOURCE_SHA256: '07e9498d0f5fce0c725d1542d57ce97e420fd4562dbf8bb015f4b50b09f9b781'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess,urllib.request,zipfile
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          def get(path):
+              request=urllib.request.Request('https://api.github.com/repos/'+repo+path,
+                  headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],
+                           'Accept':'application/vnd.github+json',
+                           'User-Agent':'HCRAF-P12O-v05234-readonly'})
+              with urllib.request.urlopen(request,timeout=60) as r:return json.load(r)
+          expected_runs=[
+              (45195251299,'e9819bb1aeb9c786fe68061a97f02308a110c56d','hcraf-stage1am-f3-p12k-prospective-replication-prereg-v0.52.25.yml'),
+              (45788559718,'b4142db920b54ed7938b28e4c2113bad59b3bffe','hcraf-stage1am-f3-p12m-integrated-36-seed-raw-qc-v0.52.32.yml'),
+              (45794162960,'48a12f5e08e21dd0e69dc1de7dc33254172c2649','hcraf-stage1am-f3-p12n-confirmatory-once-v0.52.33.yml'),
+          ]
+          for run_id,sha,wf in expected_runs:
+              o=get('/actions/runs/'+str(run_id))
+              assert o['status']=='completed' and o['conclusion']=='success',run_id
+              assert o['head_sha']==sha and o['path'].endswith('/'+wf),run_id
+              subprocess.check_call(['git','merge-base','--is-ancestor',sha,'HEAD'])
+              print('PASS_LOCKED_PARENT',run_id)
+          expected={
+              15102130997:'5d9a96be23a672532f0278dadf344c96e2ad3d8b47a32cdc25128ffccc7b8ca2',
+              15104263000:'73cac16ddd6a0db8a8e647da966cf02f7070a8e3eee7c7cf88ce5e215b9cd6c8',
+          }
+          for id,digest in expected.items():
+              o=get('/actions/artifacts/'+str(id))
+              assert o['digest']=='sha256:'+digest and not o['expired'],id
+              assert o['workflow_run']['id']==(45788559718 if id==15102130997 else 45794162960)
+          expected_batches={
+              1:'b324c9e86cabcd6e9e22e664a465d17088229e004e6c10b8538f8e1fced22e29',
+              2:'3e340be948411eec829ee361747c0d77748b34c5ca134cac53648616ff0609b9',
+              3:'4acaed614a7f87402fc2e00f5299b9222ee08e172b6381bb0492e4f067af4026',
+              4:'7a1ebbd9c260398616a18e7f0cca17afa9feab12d2bc3734890099c89025986d',
+              5:'6790e27648c69600de780b6117a660ef3127ed251b8fafdd998c4919bf6747d7',
+              6:'899d11a0aacb5cb75bd055e7ea5f278c100c318dbe0256b351a7f619202384f6',
+          }
+          arts=get('/actions/runs/45794162960/artifacts?per_page=100')['artifacts']
+          for batch,digest in expected_batches.items():
+              name=f'hcraf-f3-p12n-batch-{batch}-v05233-run-45794162960'
+              hits=[a for a in arts if a['name']==name]
+              assert len(hits)==1 and not hits[0]['expired']
+              assert hits[0]['digest']=='sha256:'+digest
+          committed=[
+              ('hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip','13ff992e6be059e0ba8f92bb1cf97f76d5c3ed78fe259cfe43b78f47c01ce287'),
+              ('hcraf_stage1am_f3_p12n_confirmatory_v05233_sources.zip','26d05e75ac61e579741e2384326313d3016adec8e001dc93ddbbc78144a69c5b'),
+              ('hcraf_stage1am_f3_p12o_postconfirmatory_v05234_sources.zip',os.environ['P12O_SOURCE_SHA256']),
+          ]
+          for name,digest in committed:
+              raw=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==digest,name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==raw,name
+          name=committed[-1][0]
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12O_SOURCE_SHA256_v05234.json'))
+              assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12O_SOURCE_SHA256_v05234.json'}
+              for path,digest in m['files'].items():
+                  assert hashlib.sha256(z.read(path)).hexdigest()==digest,path
+              z.extractall('.')
+          print('PASS_P12O_PARENTS_SIX_EXTRACT_HASHES_AND_IMMUTABLE_SOURCES')
+          PY
+      - name: Run fail-closed independent post-confirmatory safety tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12o_postconfirmatory_v05234.py' -v
+      - name: Download exact P12N final report once-only immutable artifact
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          run-id: 45794162960
+          name: hcraf-f3-p12n-one-time-preregistered-36-seed-analysis-v05233-run-45794162960
+          path: p12o_immutable_final_report
+      - name: Download six original non-scoring feature/label batch artifacts
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ github.token }}
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          run-id: 45794162960
+          pattern: hcraf-f3-p12n-batch-*-v05233-run-45794162960
+          path: p12o_immutable_six_batch_rows
+          merge-multiple: false
+      - name: Audit existing result, rows and construction (NO NEW AP OR BOOTSTRAP)
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,pathlib
+          p=pathlib.Path('p12o_immutable_final_report/P12N_36_SEED_ONCE_ONLY_CONFIRMATORY_P12K_REPORT.json')
+          orig=pathlib.Path('hcraf/episode/docs/1AM/F3_P12O_POSTCONFIRMATORY_REVIEW_v0.52.34/P12N_FROZEN_REPORT_FROM_RUN_45794162960.json')
+          assert p.read_bytes()==orig.read_bytes(),'P12N immutable report differs from pinned snapshot'
+          assert hashlib.sha256(p.read_bytes()).hexdigest()=='79c03d8bf686caf530c7f613d198409c6aada57e281962544108cd30e163b4af'
+          PY
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12o_postconfirmatory_v05234.py \
+              --final p12o_immutable_final_report \
+              --batches p12o_immutable_six_batch_rows \
+              --p12k-source hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip \
+              --output P12O_36_SEED_POSTCONFIRMATORY_READ_ONLY_AUDIT_v05234.json
+          python3 - <<'PY'
+          import json
+          p='P12O_36_SEED_POSTCONFIRMATORY_READ_ONLY_AUDIT_v05234.json'
+          r=json.load(open(p))
+          assert r['status']=='PASS_P12O_SOURCE_ROWS_INTEGRITY_CONSTRUCT_REVIEW_REQUIRED'
+          assert r['raw_rows_authenticated']==27648 and r['positive_labels_authenticated']==1937
+          assert r['no_new_AP_computed'] and r['construct_review_required']
+          assert r['F3_ready'] is False and r['GO_FREEZE'] is False and r['training_ready'] is False
+          print('PASS_P12O_FINISHED_READ_ONLY_NO_F3_GO')
+          PY
+      - name: Preserve only read-only post-confirmatory construct review report
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12o-independent-construct-review-v05234-run-${{ github.run_id }}
+          path: P12O_36_SEED_POSTCONFIRMATORY_READ_ONLY_AUDIT_v05234.json
+          retention-days: 30
+          if-no-files-found: error
