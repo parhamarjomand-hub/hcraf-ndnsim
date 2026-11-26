@@ -73,10 +73,13 @@ jobs:
               hname='hcraf/episode/src/hcraf-stage1am-f3-p12s-local-causal-meter-v05238.hpp'
               dest=pathlib.Path(hname);assert not dest.exists()
               dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(z.read(hname))
-          # GitHub artifact REST returns original ZIP bytes, NOT a reconstructed download-artifact directory.
-          req=urllib.request.Request('https://api.github.com/repos/'+repo+'/actions/artifacts/15133361443/zip',headers=headers)
-          with urllib.request.urlopen(req,timeout=120) as r: raw=r.read()
+          # The identical original GitHub-generated artifact ZIP is committed under its SHA-256 lock.
+          # Preserve exact archive bytes; never reconstruct or rescore its contents.
+          archived=pathlib.Path('HCRAF_P12T_ORIGINAL_NATIVE_ARTIFACT_45844118722.zip')
+          assert archived.is_file(),'P12T_ORIGINAL_ARTIFACT_NOT_UPLOADED'
+          raw=archived.read_bytes()
           assert sha(raw)==os.environ['P12T_ARTIFACT_SHA256'],'P12T_GITHUB_ZIP_SHA'
+          assert subprocess.check_output(['git','show','HEAD:'+archived.name])==raw,'P12T_ARTIFACT_NOT_COMMITTED'
           dest=pathlib.Path('p12u_original_locked_evidence/P12T_NATIVE_DEV_SENTINEL_45844118722.zip')
           dest.write_bytes(raw)
           with zipfile.ZipFile(io.BytesIO(raw)) as z:
