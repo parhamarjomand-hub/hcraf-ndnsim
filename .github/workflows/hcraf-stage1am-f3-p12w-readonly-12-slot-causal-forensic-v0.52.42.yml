@@ -1,0 +1,97 @@
+name: HCRAF F3 P12W Readonly Native 12-Slot Causal Forensic (v0.52.42)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  readonly_p12v_evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      P12W_SOURCE_SHA256: "5314163efb7f9734809487389e8c32c316a5109720e0b764b94740feb2f1a95c"
+      P12W_ORIGINAL_ARTIFACT: "HCRAF_P12V_ORIGINAL_NATIVE_ARTIFACT_45868303602.zip"
+      P12W_ARTIFACT_SHA256: "4d63c630f405ee6c7bca64906683888666ca7f3eb15bbc13d7346fc9b7edda49"
+    steps:
+      - name: Checkout complete immutable Git history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Authenticate P12V parent, Git-committed exact ZIP bytes and P12W source manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUTH'
+          import hashlib,json,os,pathlib,stat,subprocess,urllib.request,zipfile
+          def sha(b): return hashlib.sha256(b).hexdigest()
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          def get(s):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+s,headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12W-readonly-v05242'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          parent=get('/actions/runs/45868303602')
+          assert parent['status']=='completed' and parent['conclusion']=='success'
+          assert parent['head_sha']=='f28d7bcae9ecce2aeff6748266bf0a857f97ab4f'
+          assert parent['path'].endswith('/hcraf-stage1am-f3-p12v-pinned-native-twelve-hook-dev-v0.52.41.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor',parent['head_sha'],'HEAD'])
+          a=get('/actions/artifacts/15143920353')
+          assert a['name']=='hcraf-f3-p12v-one-dev-live-nfd-twelve-sentinel-v05241-run-45868303602'
+          assert a['workflow_run']['id']==45868303602 and not a['expired']
+          assert a['digest']=='sha256:'+os.environ['P12W_ARTIFACT_SHA256']
+          for name,expected in [
+            (os.environ['P12W_ORIGINAL_ARTIFACT'],os.environ['P12W_ARTIFACT_SHA256']),
+            ('hcraf_stage1am_f3_p12w_causal_readonly_gap_v05242_sources.zip',os.environ['P12W_SOURCE_SHA256'])]:
+              b=pathlib.Path(name).read_bytes()
+              assert sha(b)==expected,name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==b,name
+              print('PASS_P12W_SOURCE_ORIGINAL_BYTES',name)
+          with zipfile.ZipFile('hcraf_stage1am_f3_p12w_causal_readonly_gap_v05242_sources.zip') as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12W_SOURCE_SHA256_v05242.json'))
+              assert m['status']=='READ_ONLY_AUDIT_ONLY'
+              assert m['original_artifact_sha256']==os.environ['P12W_ARTIFACT_SHA256']
+              assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12W_SOURCE_SHA256_v05242.json'}
+              for path,h in m['files'].items():
+                  p=pathlib.PurePosixPath(path)
+                  assert p.parts[:2]==('hcraf','episode') and not p.is_absolute() and '..' not in p.parts
+                  assert chr(92) not in path and not stat.S_ISLNK(z.getinfo(path).external_attr>>16)
+                  b=z.read(path);assert sha(b)==h
+                  dest=pathlib.Path(path);assert not dest.exists(),('P12W_OVERLAY_OVERWRITE',path)
+                  dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(b)
+          print('PASS_P12W_PARENT_AND_IMMUTABLE_SOURCE_AND_NO_SIMS')
+          PYAUTH
+      - name: Audit original 128 physical decisions and run fail-closed mutation tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p p12w_readonly_output
+          export PYTHONPATH=hcraf/episode/scripts
+          python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12w_native_12_causal_v05242.py' -v \
+            2>&1 | tee p12w_readonly_output/mutation_tests.log
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12w_native_12_causal_v05242.py \
+            --artifact "$P12W_ORIGINAL_ARTIFACT" \
+            --output p12w_readonly_output/P12W_NATIVE_12_SLOT_CAUSAL_GAP_QC_v05242.json
+          python3 - <<'PYLOCK'
+          import json
+          x=json.load(open('p12w_readonly_output/P12W_NATIVE_12_SLOT_CAUSAL_GAP_QC_v05242.json'))
+          assert x['status']=='PASS_P12W_CAUSAL_OBSERVABILITY_QC_ONLY_TWO_NATIVE_PATHS_UNEXERCISED'
+          assert x['native_decisions_authenticated']==128
+          assert x['B1_feature_count']==12
+          assert not x['native_Nack_path_physical_coverage_validated']
+          assert not x['native_Drop_path_physical_coverage_validated']
+          assert not x['F3_ready'] and not x['GO_FREEZE'] and not x['training_ready']
+          assert not x['all_12_B1_features_fully_validated']
+          assert x['model_fits']==0 and x['physical_cases_run_in_P12W']==0
+          assert not x['new_AP_computed'] and x['confirmation_seed_reads']==0
+          print('PASS_P12W_READ_ONLY_EVIDENCE_ONLY_NO_F3_GO')
+          PYLOCK
+      - name: Upload scientific failure-preserving P12W forensic receipt only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12w-native-12-slot-causal-gap-v05242-run-${{ github.run_id }}
+          path: p12w_readonly_output/
+          if-no-files-found: ignore
+          retention-days: 90
