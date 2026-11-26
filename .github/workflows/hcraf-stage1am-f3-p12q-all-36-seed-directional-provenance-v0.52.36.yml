@@ -1,0 +1,152 @@
+name: HCRAF F3 P12Q All 36 Seeds Directional Causal Source QC (v0.52.36)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12q-36-seed-source-provenance-v05236
+  cancel-in-progress: false
+jobs:
+  audit_batch:
+    name: Directional source and causality for original batch ${{ matrix.batch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        include:
+          - {batch: 1, run: 45203201890, pattern: "hcraf-f3-p12l1-seed-*-v05226-run-45203201890-attempt-1"}
+          - {batch: 2, run: 45595506756, pattern: "hcraf-f3-p12l2-seed-*-v05227-run-45595506756-attempt-1"}
+          - {batch: 3, run: 45618979484, pattern: "hcraf-f3-p12l3-seed-*-v05228-run-45618979484-attempt-1"}
+          - {batch: 4, run: 45653046932, pattern: "hcraf-f3-p12l4-seed-*-v05229-run-45653046932-attempt-1"}
+          - {batch: 5, run: 45683873566, pattern: "hcraf-f3-p12l5-seed-*-v05230-run-45683873566-attempt-1"}
+          - {batch: 6, run: 45760750646, pattern: "hcraf-f3-p12l6-seed-*-v05231-run-45760750646-attempt-1"}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Authenticate original P12P success, P12N/P12M original parent and P12Q sources
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYLOCK'
+          import json,os,urllib.request,subprocess,hashlib,zipfile,pathlib
+          repo=os.environ['GITHUB_REPOSITORY'];assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          h={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12Q-v05236'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=h),timeout=60) as r:return json.load(r)
+          for rid,sha,wf in [
+           (45788559718,'b4142db920b54ed7938b28e4c2113bad59b3bffe','hcraf-stage1am-f3-p12m-integrated-36-seed-raw-qc-v0.52.32.yml'),
+           (45794162960,'48a12f5e08e21dd0e69dc1de7dc33254172c2649','hcraf-stage1am-f3-p12n-confirmatory-once-v0.52.33.yml'),
+           (45826880462,'6e76902ca048530b8dfd4b1ed9b214c3bfbe4936','hcraf-stage1am-f3-p12o-postconfirmatory-readonly-audit-v0.52.34.yml'),
+           (45828462347,'ad1c50867277a16dd3e2069d4443886ef3300703','hcraf-stage1am-f3-p12p-directional-construct-provenance-v0.52.35.yml')]:
+              r=get('/actions/runs/'+str(rid))
+              assert r['status']=='completed' and r['conclusion']=='success'
+              assert r['head_sha']==sha and r['path'].endswith('/'+wf)
+              subprocess.check_call(['git','merge-base','--is-ancestor',sha,'HEAD'])
+          a=get('/actions/artifacts/15121680519')
+          assert a['digest']=='sha256:5154fce2072a8e4da5accb06094658b7f6863ae4f78351603a2c49c868307fe3' and not a['expired']
+          assert a['workflow_run']['id']==45828462347
+          name='hcraf_stage1am_f3_p12q_all_seed_directional_audit_v05236_sources.zip'
+          raw=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='33959caa848192adb5c6f33e549bf968d8955e05d1fafcf1a7bbb0a5976d6cf9'
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12Q_SOURCE_SHA256_v05236.json'))
+              assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12Q_SOURCE_SHA256_v05236.json'}
+              assert m['file_count']==len(m['files'])
+              for p,d in m['files'].items():assert hashlib.sha256(z.read(p)).hexdigest()==d,p
+              z.extractall('.')
+          assert hashlib.sha256(pathlib.Path('hcraf/episode/docs/1AM/F3_P12Q_DIRECTIONAL_PROVENANCE_v0.52.36/P12Q_LOCKED_RAW_ORIGINS.json').read_bytes()).hexdigest()=='7b8f62920ac72f36b465456fdb701ca9dd82a83aa676303c651d4c68b333e488'
+          print('PASS_P12Q_PARENTS_SOURCES_AND_36_ORIGINAL_HASH_LOCKS')
+          PYLOCK
+      - name: Run provenance-only protective regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12q_all_seed_direction_v05236.py' -v
+      - name: Download exact original six independent physical seed archives
+        uses: actions/download-artifact@v4
+        with:
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          github-token: ${{ github.token }}
+          run-id: ${{ matrix.run }}
+          pattern: ${{ matrix.pattern }}
+          path: p12q_original_raw_batch_${{ matrix.batch }}
+          merge-multiple: false
+      - name: Audit all original physical decision devices and telemetry causal receipts
+        shell: bash
+        env:
+          BATCH: ${{ matrix.batch }}
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12q_all_seed_direction_v05236.py batch \
+            --batch "$BATCH" --input "p12q_original_raw_batch_${{ matrix.batch }}" \
+            --lock hcraf/episode/docs/1AM/F3_P12Q_DIRECTIONAL_PROVENANCE_v0.52.36/P12Q_LOCKED_RAW_ORIGINS.json \
+            --output "P12Q_BATCH_${{ matrix.batch }}_DIRECTIONAL_QC_v05236.json"
+      - name: Upload no-AP batch-level provenance receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12q-batch-${{ matrix.batch }}-v05236-run-${{ github.run_id }}
+          path: P12Q_BATCH_${{ matrix.batch }}_DIRECTIONAL_QC_v05236.json
+          if-no-files-found: error
+          retention-days: 30
+  aggregate:
+    name: Verify all 36 distinct seeds, 432 cases, causal sources, NO F3 GO
+    needs: audit_batch
+    if: ${{ success() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download all six source-locked batch reports from this run
+        uses: actions/download-artifact@v4
+        with:
+          pattern: hcraf-f3-p12q-batch-*-v05236-run-${{ github.run_id }}
+          path: p12q_six_original_batch_reports
+          merge-multiple: false
+      - name: Verify exact immutable P12Q code and aggregate with fail-closed gates
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAGG'
+          import pathlib,hashlib,zipfile,json,subprocess
+          name='hcraf_stage1am_f3_p12q_all_seed_directional_audit_v05236_sources.zip'
+          raw=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()=='33959caa848192adb5c6f33e549bf968d8955e05d1fafcf1a7bbb0a5976d6cf9'
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12Q_SOURCE_SHA256_v05236.json'))
+              for p,d in m['files'].items():assert hashlib.sha256(z.read(p)).hexdigest()==d,p
+              z.extractall('.')
+          PYAGG
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12q_all_seed_direction_v05236.py aggregate \
+            --input p12q_six_original_batch_reports \
+            --lock hcraf/episode/docs/1AM/F3_P12Q_DIRECTIONAL_PROVENANCE_v0.52.36/P12Q_LOCKED_RAW_ORIGINS.json \
+            --output P12Q_ALL_36_SEED_DIRECTIONAL_CAUSAL_QC_ONLY_v05236.json
+          python3 - <<'PYGUARD'
+          import json
+          r=json.load(open('P12Q_ALL_36_SEED_DIRECTIONAL_CAUSAL_QC_ONLY_v05236.json'))
+          assert r['counts']['cases']==432 and r['counts']['active_decisions']==27648
+          assert r['F3_ready'] is False and r['GO_FREEZE'] is False
+          assert r['new_AP_computed'] is False and r['model_fits']==0 and r['heldout_reads']==0
+          assert r['construct_comparator_fairness_proven'] is False
+          print('PASS_P12Q_FULL_36_CAUSAL_DIRECTIONAL_PROVENANCE_NO_F3_GO')
+          PYGUARD
+      - name: Upload full independent 36 seed directional audit
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12q-36-seed-directional-audit-v05236-run-${{ github.run_id }}
+          path: P12Q_ALL_36_SEED_DIRECTIONAL_CAUSAL_QC_ONLY_v05236.json
+          if-no-files-found: error
+          retention-days: 30
