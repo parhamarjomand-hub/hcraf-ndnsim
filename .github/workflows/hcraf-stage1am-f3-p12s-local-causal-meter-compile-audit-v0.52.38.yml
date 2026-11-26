@@ -1,0 +1,95 @@
+name: HCRAF F3 P12S Local Causal Meter Compile and Prereg-Source Audit (v0.52.38)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  p12s-local-kernel-smoke:
+    name: Source-locked node1 causal local meter C++17 test; no simulations
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      P12S_SOURCE_SHA256: 587d792d7e7e7f1837da8df0490b6fba5a0394248917ae2f0b570bb925b594e0
+    steps:
+      - name: Checkout FULL history for immutable parent ancestry
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify parent P12R run, committed immutable source and prereg receipt
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUTH'
+          import hashlib,json,os,pathlib,subprocess,urllib.request,zipfile
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12S-v05238'}
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers=headers)
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          r=get('/actions/runs/45833974569')
+          assert r['status']=='completed' and r['conclusion']=='success'
+          assert r['head_sha']=='17ba4ba7dbb6ebf997954d36a5d6981a4151752d'
+          assert r['path'].endswith('/hcraf-stage1am-f3-p12r-fair-comparator-prospective-prereg-v0.52.37.yml')
+          subprocess.check_call(['git','merge-base','--is-ancestor','17ba4ba7dbb6ebf997954d36a5d6981a4151752d','HEAD'])
+          a=get('/actions/artifacts/15124026224')
+          assert a['digest']=='sha256:0ec604d9134dd2ba9e7d167690ab7817c6875e2884d32ffe4e77e807cb70dd80' and not a['expired']
+          for name,expected in [
+             ('hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip','dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30'),
+             ('hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip','f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265'),
+             ('hcraf_stage1am_f3_p12s_local_instrument_v05238_sources.zip',os.environ['P12S_SOURCE_SHA256'])]:
+              raw=pathlib.Path(name).read_bytes()
+              assert hashlib.sha256(raw).hexdigest()==expected,name
+              assert subprocess.check_output(['git','show','HEAD:'+name])==raw,name
+              print('PASS_P12S_LOCKED_COMMITTED_SOURCE',name)
+          name='hcraf_stage1am_f3_p12s_local_instrument_v05238_sources.zip'
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12S_SOURCE_SHA256_v05238.json'))
+              assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12S_SOURCE_SHA256_v05238.json'}
+              for p,dig in m['files'].items():
+                  assert hashlib.sha256(z.read(p)).hexdigest()==dig,p
+              z.extractall('.')
+          print('PASS_P12S_GITHUB_SOURCE_AND_PARENT_AUTH')
+          PYAUTH
+      - name: Install g++ and verify standalone meter with warnings as errors
+        run: |
+          set -euo pipefail
+          g++ --version | head -1
+          g++ -std=c++17 -O2 -Wall -Wextra -Werror -pedantic \
+            -I hcraf/episode/src \
+            hcraf/episode/tests/p12s_local_causal_meter_v05238_test.cpp -o /tmp/p12s-meter-tests
+          /tmp/p12s-meter-tests
+      - name: Fetch authenticated P12R prereg receipt only
+        uses: actions/download-artifact@v4
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: 45833974569
+          name: hcraf-f3-p12r-fair-comparator-prereg-only-v05237-run-45833974569
+          path: p12s_parent_receipt
+      - name: Test source guards and run independent no-sim audit
+        run: |
+          set -euo pipefail
+          python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12s_instrument_v05238.py' -v
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12s_instrument_v05238.py \
+            --receipt p12s_parent_receipt/P12R_NEW_FAIR_COMPARATOR_PREREG_RECEIPT_v05237.json \
+            --output P12S_LOCAL_INSTRUMENTATION_ONLY_QC_v05238.json
+          python3 - <<'PYLOCK'
+          import json
+          r=json.load(open('P12S_LOCAL_INSTRUMENTATION_ONLY_QC_v05238.json'))
+          assert r['status']=='PASS_P12S_LOCAL_INSTRUMENT_CXX17_KERNEL_AND_CAUSAL_GUARDS_ONLY'
+          assert r['physical_scenarios_run']==0 and r['model_fits']==0
+          assert r['ndnsim_integration_compiled'] is False and r['native_traces_wired'] is False
+          assert not r['F3_ready'] and not r['GO_FREEZE'] and not r['new_AP_computed']
+          print('PASS_P12S_DEV_AND_CONFIRMATION_UNTOUCHED')
+          PYLOCK
+      - name: Upload instrumentation-only immutable technical receipt
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12s-causal-local-meter-compile-only-v05238-run-${{ github.run_id }}
+          path: P12S_LOCAL_INSTRUMENTATION_ONLY_QC_v05238.json
+          if-no-files-found: error
+          retention-days: 30
