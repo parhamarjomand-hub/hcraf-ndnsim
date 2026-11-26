@@ -1,0 +1,72 @@
+name: HCRAF F3 P12R Prospective Fair-Comparator Prereg Only (v0.52.37)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  prereg_only:
+    name: Seal new development and confirmatory seeds; ZERO sims/AP/fit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      P12R_SOURCE_SHA256: dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify original immutable parents and new prereg source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,subprocess,urllib.request,zipfile
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,
+                headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12R-v05237'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          parents={"P12K": {"run": 45195251299, "sha": "e9819bb1aeb9c786fe68061a97f02308a110c56d", "workflow": "hcraf-stage1am-f3-p12k-prospective-replication-prereg-v0.52.25.yml"}, "P12M": {"run": 45788559718, "sha": "b4142db920b54ed7938b28e4c2113bad59b3bffe", "workflow": "hcraf-stage1am-f3-p12m-integrated-36-seed-raw-qc-v0.52.32.yml"}, "P12N": {"run": 45794162960, "sha": "48a12f5e08e21dd0e69dc1de7dc33254172c2649", "workflow": "hcraf-stage1am-f3-p12n-confirmatory-once-v0.52.33.yml"}, "P12O": {"run": 45826880462, "sha": "6e76902ca048530b8dfd4b1ed9b214c3bfbe4936", "workflow": "hcraf-stage1am-f3-p12o-postconfirmatory-readonly-audit-v0.52.34.yml"}, "P12P": {"run": 45828462347, "sha": "ad1c50867277a16dd3e2069d4443886ef3300703", "workflow": "hcraf-stage1am-f3-p12p-directional-construct-provenance-v0.52.35.yml"}, "P12Q": {"run": 45830572992, "sha": "014e697e39019422bfacc9c868e0316d83303483", "workflow": "hcraf-stage1am-f3-p12q-all-36-seed-directional-provenance-v0.52.36.yml"}}
+          for label,x in parents.items():
+              r=get('/actions/runs/'+str(x['run']))
+              assert r['status']=='completed' and r['conclusion']=='success',label
+              assert r['head_sha']==x['sha'] and r['path'].endswith('/'+x['workflow']),label
+              subprocess.check_call(['git','merge-base','--is-ancestor',x['sha'],'HEAD'])
+              print('PASS_P12R_PARENT',label,x['run'])
+          for artifact_id,digest in [(15122102746,'sha256:c47fb95f9366b59a24d9429689df1955ff012103eae7c1c819797dd73f4b3505'),(15104263000,'sha256:73cac16ddd6a0db8a8e647da966cf02f7070a8e3eee7c7cf88ce5e215b9cd6c8')]:
+              a=get('/actions/artifacts/'+str(artifact_id))
+              assert a['digest']==digest and not a['expired'],artifact_id
+          name='hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip'
+          raw=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==os.environ['P12R_SOURCE_SHA256']
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw
+          with zipfile.ZipFile(name) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read('HCRAF_F3_P12R_SOURCE_SHA256_v05237.json'))
+              assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12R_SOURCE_SHA256_v05237.json'}
+              for path,expected in m['files'].items():
+                  assert hashlib.sha256(z.read(path)).hexdigest()==expected,path
+              z.extractall('.')
+          print('PASS_P12R_VERIFIED_PARENT_AND_IMMUTABLE_PREREG_SOURCE')
+          PY
+      - name: Audit all 252 frozen prospective schedules and 504 matrix cells
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12r_prereg_v05237.py --output P12R_NEW_FAIR_COMPARATOR_PREREG_RECEIPT_v05237.json
+          python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12r_prereg_v05237.py' -v
+          python3 - <<'PY'
+          import json
+          x=json.load(open('P12R_NEW_FAIR_COMPARATOR_PREREG_RECEIPT_v05237.json'))
+          assert x['status']=='PASS_P12R_NEW_FAIR_COMPARATOR_STUDY_PROSPECTIVELY_PREREGISTERED_ONLY'
+          assert x['physical_cases_run']==0 and x['new_models_fit']==0 and not x['new_AP_computed']
+          assert x['F3_ready'] is False and x['GO_FREEZE'] is False and not x['heldout_read']
+          print('PASS_P12R_COMPLETE_NO_SIMS_NO_GO')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12r-fair-comparator-prereg-only-v05237-run-${{ github.run_id }}
+          path: P12R_NEW_FAIR_COMPARATOR_PREREG_RECEIPT_v05237.json
+          if-no-files-found: error
+          retention-days: 30
