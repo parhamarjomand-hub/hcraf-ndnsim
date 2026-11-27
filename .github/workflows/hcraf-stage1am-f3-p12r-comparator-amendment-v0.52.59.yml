@@ -1,0 +1,70 @@
+name: HCRAF F3 P12R Prospective Comparator Amendment and RTT Freeze (v0.52.59)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  amendment:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Authenticate source and prospective amendment before accessing DEV
+        run: |
+          set -euo pipefail
+          echo '6ba91095abf94d27b10709d1c19bd730798f59b3da4901673d7dec1e5d7b670d  hcraf_stage1am_f3_p12r_comparator_amendment_v05259_sources.zip' | sha256sum -c -
+          unzip -q hcraf_stage1am_f3_p12r_comparator_amendment_v05259_sources.zip -d amendment_src
+          cd amendment_src
+          python - <<'CHECK'
+          import json,hashlib,pathlib
+          m=json.loads(pathlib.Path('SOURCE_SHA256.json').read_text())
+          if set(m)!={'amendment.py','test_amendment.py','freeze_dev.py','pilot_audit.py','reference_contract.py','AMENDMENT_LOCK.json'}: raise RuntimeError('SOURCE_SET')
+          for n,h in m.items():
+              if hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest()!=h: raise RuntimeError('SOURCE_SHA')
+          CHECK
+          python -m unittest -v test_amendment.py
+      - name: Authenticate official DEV-only ancestry and retrieve pinned artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'CHECK'
+          import json,os,urllib.request,pathlib,hashlib
+          repo='parhamarjomand-hub/hcraf-ndnsim'
+          if os.environ['GITHUB_REPOSITORY']!=repo: raise RuntimeError('REPOSITORY')
+          base='https://api.github.com/repos/'+repo+'/actions/'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request(base+path,headers=headers),timeout=120) as r: return json.load(r)
+          pins=[(46044334756,'cd3c1c87351497e3be1093bf81c156bbc273c08f',15221940873,'746889957c3d91523fa937e7a888cef4e50d847c8596760f6b833ccdafe28ab2','prereg.zip'),(46062593390,'518a31059fdf94179c94de10701e22b7bc841a1a',15229939531,'f9fd01d7a22f03675033495b834d449d98ea35b8b4cafddb717eeadac7401992','dev.zip'),(46062593390,'518a31059fdf94179c94de10701e22b7bc841a1a',15231615475,'86aed069623b04b3c3786e0afc7fc97f7e1953313e836883b7b0265d034739e8','freeze.zip'),(46068343005,'eacca309a4193e53f706b4aea18f6683136d8dbe',15231752320,'c2cd0984dfb63587dcd023663e9ed206afc0adb3c4b0edc6500a8d1139e7f49b','audit.zip')]
+          import subprocess
+          for run,commit,aid,h,n in pins:
+              r=get('runs/'+str(run));a=get('artifacts/'+str(aid))
+              if r['conclusion']!='success' or r['head_sha']!=commit or a['workflow_run']['id']!=run or a['workflow_run']['head_sha']!=commit or a['digest']!='sha256:'+h or a['expired']: raise RuntimeError('PROVENANCE')
+              subprocess.run(['curl','--fail','--silent','--show-error','--location','--retry','3','-H','Authorization: Bearer '+os.environ['GH_TOKEN'],base+'artifacts/'+str(aid)+'/zip','-o',n],check=True)
+              with open(n,'rb') as f:
+                  if hashlib.file_digest(f,'sha256').hexdigest()!=h: raise RuntimeError('ZIP_SHA')
+          CHECK
+      - name: Freeze RTT-only comparator without refitting B0 or B1
+        run: |
+          set -euo pipefail
+          python amendment_src/amendment.py prereg.zip dev.zip freeze.zip audit.zip result
+          python - <<'CHECK'
+          import json,pathlib,hashlib
+          p=pathlib.Path('result');r=json.loads((p/'AMENDMENT_RECEIPT.json').read_text())
+          if r['status']!='PASS_P12R_COMPARATOR_AMENDMENT_RTT_FROZEN_ONLY_NO_F3_RELEASE' or r['model_fits']!=1 or r['original_model_refits'] or r['training_rows']!=22680 or r['raw_files_verified']!=3240 or r['confirmation_rows_read'] or r['confirmation_cases_executed'] or r['confirmation_execution_authorized'] or r['new_AP_computed'] or r['new_bootstrap_computed'] or r['F3_ready'] or r['GO_FREEZE'] or r['training_ready']: raise RuntimeError('AMENDMENT_GATE')
+          if set(r['files'])!={'AMENDMENT_LOCK.json','FROZEN_COMPARATORS.json','ORIGINAL_FROZEN_MODELS.json'}: raise RuntimeError('FILE_SET')
+          for n,h in r['files'].items():
+              if hashlib.sha256((p/n).read_bytes()).hexdigest()!=h: raise RuntimeError('OUTPUT_SHA')
+          if r['files']['ORIGINAL_FROZEN_MODELS.json']!='8dd2b4aef547f3419aadd42b4b81eef8f95cc7cd92d3f7fab47516cfe38126d6': raise RuntimeError('ORIGINAL_MODEL_SHA')
+          print('PASS_COMPARATOR_AMENDMENT_AND_FROZEN_OUTPUT_SEALS')
+          CHECK
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12r-comparator-amendment-v05259-run-${{ github.run_id }}
+          path: result/
+          if-no-files-found: error
