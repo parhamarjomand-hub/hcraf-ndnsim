@@ -9,7 +9,7 @@ concurrency:
   cancel-in-progress: false
 jobs:
   freeze_dev_models:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04 
     timeout-minutes: 20
     env:
       SOURCE_SHA: "b78396fe56d5a044e99dfa09156d033cdf2c836f14a700f03c86a64894edca3c"
