@@ -1,0 +1,117 @@
+name: HCRAF F3 P12R Construct Feasibility Audit (v0.52.53)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-construct-v05253
+  cancel-in-progress: false
+jobs:
+  construct_audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: "b3b43579da7212aa0c10ea1f05bd2aee863a88b0a62c530cd981bb9fd6a8f4c3"
+      DEV_SHA: "c5e63aa1de79774088adeba73b914e0e45574694974e55d81fb0363ec1375577"
+      DIAG_SHA: "916a2f346b042052225bf433f83a87a7a5e2a27099984d54416ab8e2b1e45fa1"
+      PREREG_SHA: "dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Authenticate immutable DEV and post-confirmation diagnostics parents and source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p construct_preflight
+          python - <<'PYCODE'
+          import hashlib,json,os,pathlib,stat,subprocess,urllib.request,zipfile
+          def need(ok,msg):
+              if not ok:raise RuntimeError(msg)
+          repo=os.environ['GITHUB_REPOSITORY'];need(repo=='parhamarjomand-hub/hcraf-ndnsim','REPO')
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-CONSTRUCT-v05253'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          parents=[(45955373789,'749ef4e91f5fe1a47d8c39d816b8d9702d7263ae','hcraf-stage1am-f3-p12r-dev-collection-v0.52.46.yml',15180634595,'DEV_SHA',187956192),(46041164339,'3853cbe04b842d22229c5696ea5dbe5e47c3d288','hcraf-stage1am-f3-p12r-postconfirm-diagnostics-v0.52.52.yml',15219867042,'DIAG_SHA',16008)]
+          rows=[]
+          for rid,commit,wf,aid,env,size in parents:
+              r=get('/actions/runs/'+str(rid));a=get('/actions/artifacts/'+str(aid))
+              need(r['status']=='completed' and r['conclusion']=='success' and r['head_sha']==commit and r['path']=='.github/workflows/'+wf and r['run_attempt']==1,'PARENT_RUN')
+              subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+              need(not a['expired'] and a['workflow_run']['id']==rid and a['workflow_run']['head_sha']==commit and a['digest']=='sha256:'+os.environ[env] and a['size_in_bytes']==size,'PARENT_ARTIFACT')
+              rows.append(dict(run_id=rid,head_sha=commit,artifact_id=aid,digest=a['digest']))
+          pathlib.Path('construct_preflight/parents.json').write_text(json.dumps(rows,sort_keys=True,indent=2)+'\n')
+          name='hcraf_stage1am_f3_p12r_construct_feasibility_v05253_sources.zip';raw=pathlib.Path(name).read_bytes();need(hashlib.sha256(raw).hexdigest()==os.environ['SOURCE_SHA'] and subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE_SHA')
+          with zipfile.ZipFile(name) as z:
+              mn='HCRAF_F3_P12R_CONSTRUCT_SOURCE_SHA256_v05253.json';m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'SOURCE_MANIFEST')
+              need(all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized')) and m['Congestion'] is None and m['FutureCongestion'] is None and all(m[k]==0 for k in ('new_simulations_authorized','model_fits_authorized','official_F3_labels_authorized')),'LOCKS')
+              for n,h in m['files'].items():
+                  p=pathlib.PurePosixPath(n);need(p.parts[:2]==('hcraf','episode') and '..' not in p.parts and not p.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH')
+                  b=z.read(n);need(hashlib.sha256(b).hexdigest()==h,'MEMBER_SHA');d=pathlib.Path(n);need(not d.exists(),'NO_OVERWRITE');d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+          print('PASS_AUTHENTICATED_DEV_AND_EXPLORATORY_PARENTS')
+          PYCODE
+      - name: Retrieve exact DEV raw ZIP and exploratory aggregate receipt ZIP
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in '15180634595 dev' '15219867042 diag'; do
+            read -r id file <<< "$spec"
+            curl --fail --silent --show-error --location --retry 3 --max-time 300 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/$id/zip" -o "$RUNNER_TEMP/p12r-$file.zip"
+          done
+          echo "$DEV_SHA  $RUNNER_TEMP/p12r-dev.zip" | sha256sum -c -
+          echo "$DIAG_SHA  $RUNNER_TEMP/p12r-diag.zip" | sha256sum -c -
+          echo "$PREREG_SHA  hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip" | sha256sum -c -
+      - name: Test physical trace and fail-closed safeguards
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONPATH=hcraf/episode/scripts python -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12r_v05253.py' -v 2>&1 | tee construct_preflight/tests.log
+      - name: Audit DEV physical construct feasibility only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python hcraf/episode/scripts/audit_stage1am_f3_p12r_construct_v05253.py --dev "$RUNNER_TEMP/p12r-dev.zip" --diag "$RUNNER_TEMP/p12r-diag.zip" --prereg hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip --output p12r_construct 2>&1 | tee construct_preflight/audit.log
+      - name: Verify output seals and keep construct unvalidated
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd p12r_construct
+          sha256sum -c SHA256SUMS.txt
+          python - <<'PYCODE'
+          import json,pathlib
+          r=json.loads(pathlib.Path('P12R_CONSTRUCT_FEASIBILITY_RECEIPT_v05253.json').read_text())
+          assert r['status']=='PASS_P12R_CONSTRUCT_FEASIBILITY_AUDIT_ONLY_CONSTRUCT_NOT_VALIDATED' and r['parent_scientific_status']=='NO_GO_P12R_CONFIRMATORY_STATISTICAL_GATES_NOT_MET'
+          assert r['development_cases']==72 and r['decisions_audited']==9216 and r['paired_load_contrasts']==36 and r['raw_members_checked']==360
+          assert all(r[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized','construct_validated','discriminant_validity_established','new_candidate_defined','new_AP_computed','new_bootstrap_computed')) and r['Congestion'] is None and r['FutureCongestion'] is None
+          assert all(r[k]==0 for k in ('model_fits','confirmation_rows_read','heldout_rows_read','diagnostic_injection_rows_used','new_simulations','new_candidate_scores','official_F3_labels_constructed'))
+          print('PASS_CONSTRUCT_AUDIT_ONLY_NO_GO_PRESERVED')
+          PYCODE
+      - name: Always record science fences
+        if: always()
+        run: |
+          mkdir -p construct_preflight
+          printf '%s\n' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.53" 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'DEV physical feasibility only; no fit, candidate, scoring, simulation or scientific release.' > construct_preflight/science_fences.log
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: hcraf-f3-p12r-construct-feasibility-v05253-run-${{ github.run_id }}
+          path: |
+            construct_preflight/
+            p12r_construct/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: hcraf-f3-p12r-construct-feasibility-failure-v05253-run-${{ github.run_id }}
+          path: construct_preflight/
+          if-no-files-found: error
+          retention-days: 90
