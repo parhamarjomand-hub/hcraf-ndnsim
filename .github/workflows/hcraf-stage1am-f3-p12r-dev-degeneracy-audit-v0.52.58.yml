@@ -1,0 +1,65 @@
+name: HCRAF F3 P12R DEV Degeneracy Audit (v0.52.58)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Verify pinned source and test fail-closed guards
+        run: |
+          set -euo pipefail
+          echo '5d981857aa9fd6c9d721162dc2e506702651b2c4b6cf8e710dd902c4bb9971ea  hcraf_stage1am_f3_p12r_dev_degeneracy_audit_v05258_sources.zip' | sha256sum -c -
+          unzip -q hcraf_stage1am_f3_p12r_dev_degeneracy_audit_v05258_sources.zip -d audit_src
+          cd audit_src
+          python - <<'CHECK'
+          import json,hashlib,pathlib
+          m=json.loads(pathlib.Path('SOURCE_SHA256.json').read_text())
+          if set(m)!={'audit.py','test_audit.py'}: raise RuntimeError('SOURCE_SET')
+          for n,h in m.items():
+              if hashlib.sha256(pathlib.Path(n).read_bytes()).hexdigest()!=h: raise RuntimeError('SOURCE_SHA')
+          CHECK
+          python -m unittest -v test_audit.py
+      - name: Authenticate official DEV-only ancestry and retrieve pinned artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python - <<'CHECK'
+          import json,os,urllib.request,pathlib,hashlib
+          repo='parhamarjomand-hub/hcraf-ndnsim'
+          if os.environ['GITHUB_REPOSITORY']!=repo: raise RuntimeError('REPOSITORY')
+          base='https://api.github.com/repos/'+repo+'/actions/'
+          headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','X-GitHub-Api-Version':'2022-11-28'}
+          def get(path):
+              with urllib.request.urlopen(urllib.request.Request(base+path,headers=headers),timeout=120) as r: return json.load(r)
+          pins=[(46044334756,'cd3c1c87351497e3be1093bf81c156bbc273c08f',15221940873,'746889957c3d91523fa937e7a888cef4e50d847c8596760f6b833ccdafe28ab2','prereg.zip'),(46062593390,'518a31059fdf94179c94de10701e22b7bc841a1a',15229939531,'f9fd01d7a22f03675033495b834d449d98ea35b8b4cafddb717eeadac7401992','dev.zip'),(46062593390,'518a31059fdf94179c94de10701e22b7bc841a1a',15231615475,'86aed069623b04b3c3786e0afc7fc97f7e1953313e836883b7b0265d034739e8','freeze.zip')]
+          import subprocess
+          for run,commit,aid,h,n in pins:
+              r=get('runs/'+str(run));a=get('artifacts/'+str(aid))
+              if r['conclusion']!='success' or r['head_sha']!=commit or a['workflow_run']['id']!=run or a['workflow_run']['head_sha']!=commit or a['digest']!='sha256:'+h or a['expired']: raise RuntimeError('PROVENANCE')
+              subprocess.run(['curl','--fail','--silent','--show-error','--location','--retry','3','-H','Authorization: Bearer '+os.environ['GH_TOKEN'],base+'artifacts/'+str(aid)+'/zip','-o',n],check=True)
+              with open(n,'rb') as f:
+                  if hashlib.file_digest(f,'sha256').hexdigest()!=h: raise RuntimeError('ZIP_SHA')
+          CHECK
+      - name: Audit all DEV feature variation without fit or scoring
+        run: |
+          set -euo pipefail
+          python audit_src/audit.py prereg.zip dev.zip freeze.zip result
+          python - <<'CHECK'
+          import json,pathlib
+          r=json.loads(pathlib.Path('result/AUDIT_RECEIPT.json').read_text())
+          if r['status']!='PASS_DEV_DEGENERACY_AUDIT_CONFIRMATION_BLOCKED' or r['raw_files_verified']!=3240 or r['selected_rows']!=22680 or not r['identical_frozen_functions'] or r['strict_superiority_possible'] or r['confirmation_execution_authorized'] or r['confirmation_rows_read'] or r['model_fits'] or r['F3_ready'] or r['GO_FREEZE'] or r['training_ready']: raise RuntimeError('AUDIT_GATE')
+          CHECK
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12r-dev-degeneracy-audit-v05258-run-${{ github.run_id }}
+          path: result/AUDIT_RECEIPT.json
+          if-no-files-found: error
