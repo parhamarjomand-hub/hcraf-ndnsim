@@ -1,0 +1,137 @@
+name: HCRAF F3 P12R Frozen Confirmation Analysis (v0.52.51)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-confirm-analysis-v05251
+  cancel-in-progress: false
+jobs:
+  analysis:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: "e8229e9f700db694c7fa8930eb52522eb0ae124a6c17e5dd50b567b98cbf7f48"
+      QC_SHA: "5ec1fae15e3406214bac508dfb295d9e3db7310e713a0e48038f98cb16f151c4"
+      FREEZE_SHA: "c68ed8da0f82229b04d5c20623142c2f46f355cb88e7aa129ba9171f24819f9c"
+      PREREG_SHA: "dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Install fixed numeric analysis dependency (no training library)
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --only-binary=:all: numpy==2.3.5
+          python -c 'import sys,numpy; assert sys.version.split()[0]=="3.13.5" and numpy.__version__=="2.3.5"'
+      - name: Authenticate immutable source, frozen-model and full-confirmation ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p analysis_preflight
+          python - <<'PYCODE'
+          import hashlib,json,os,pathlib,stat,subprocess,urllib.request,zipfile,datetime
+          def need(ok,msg):
+              if not ok: raise RuntimeError(msg)
+          repo=os.environ['GITHUB_REPOSITORY'];need(repo=='parhamarjomand-hub/hcraf-ndnsim','REPO')
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12R-ANALYSIS-v05251'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          parents=[(45991786037,'2adb3881a9968fe762233f966560cc80ec606aae','hcraf-stage1am-f3-p12r-dev-model-freeze-v0.52.48.yml',15193723927,'FREEZE_SHA',6083),(45995680622,'cc0b8dba61dc2d19192d5d0795d0fdfe086ff1b9','hcraf-stage1am-f3-p12r-confirm-collection-v0.52.49.yml',None,None,None),(46018414609,'a7f309e34366cd75d88595c26d756854f5b2109e','hcraf-stage1am-f3-p12r-confirm-dataset-qc-v0.52.50.yml',15207816038,'QC_SHA',1052034)]
+          rows=[]
+          for rid,commit,wf,aid,env,size in parents:
+              r=get('/actions/runs/'+str(rid));need(r['status']=='completed' and r['conclusion']=='success' and r['head_sha']==commit and r['path']=='.github/workflows/'+wf and r['run_attempt']==1,'PARENT_RUN')
+              subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+              row=dict(run_id=rid,head_sha=commit,created_at=r['created_at'],updated_at=r['updated_at'])
+              if aid:
+                  a=get('/actions/artifacts/'+str(aid));need(not a['expired'] and a['workflow_run']['id']==rid and a['workflow_run']['head_sha']==commit and a['digest']=='sha256:'+os.environ[env] and a['size_in_bytes']==size,'PARENT_ARTIFACT');row.update(artifact_id=aid,digest=a['digest'])
+              rows.append(row)
+          need(rows[0]['updated_at']<rows[1]['created_at'] and rows[1]['updated_at']<rows[2]['created_at'],'TEMPORAL_PROVENANCE')
+          pathlib.Path('analysis_preflight/parents.json').write_text(json.dumps(rows,sort_keys=True,indent=2)+'\n')
+          name='hcraf_stage1am_f3_p12r_confirm_analysis_v05251_sources.zip';raw=pathlib.Path(name).read_bytes();need(hashlib.sha256(raw).hexdigest()==os.environ['SOURCE_SHA'] and subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE_SHA')
+          with zipfile.ZipFile(name) as z:
+              mn='HCRAF_F3_P12R_CONFIRM_ANALYSIS_SOURCE_SHA256_v05251.json';m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'SOURCE_MANIFEST')
+              need(all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized')) and m['Congestion'] is None and m['FutureCongestion'] is None and all(m[k]==0 for k in ('model_fits_authorized','confirmation_simulations_authorized','diagnostic_rows_authorized')),'LOCKS')
+              for n,h in m['files'].items():
+                  p=pathlib.PurePosixPath(n);need(p.parts[:2]==('hcraf','episode') and '..' not in p.parts and not p.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH')
+                  b=z.read(n);need(hashlib.sha256(b).hexdigest()==h,'MEMBER_HASH');d=pathlib.Path(n);need(not d.exists(),'NO_OVERWRITE');d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+          print('PASS_AUTHENTICATED_FULL_CONFIRMATION_AND_PRE_CONFIRM_FROZEN_MODELS')
+          PYCODE
+      - name: Retrieve exact immutable artifact ZIP bytes (no DEV or legacy rows)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for spec in '15207816038 qc' '15193723927 freeze'; do
+            read -r id file <<< "$spec"
+            curl --fail --silent --show-error --location --retry 3 --max-time 300 \
+              -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+              "https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/$id/zip" \
+              -o "$RUNNER_TEMP/p12r-$file.zip"
+          done
+          echo "$QC_SHA  $RUNNER_TEMP/p12r-qc.zip" | sha256sum -c -
+          echo "$FREEZE_SHA  $RUNNER_TEMP/p12r-freeze.zip" | sha256sum -c -
+          echo "$PREREG_SHA  hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip" | sha256sum -c -
+      - name: Test tie-grouped AP, whole-seed multiplicities and frozen scoring
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12r_confirm_v05251.py' -v 2>&1 | tee analysis_preflight/tests.log
+      - name: Reproduce the single locked complete-data statistical analysis
+        shell: bash
+        run: |
+          set -euo pipefail
+          python hcraf/episode/scripts/analyze_stage1am_f3_p12r_confirm_v05251.py \
+            --qc-zip "$RUNNER_TEMP/p12r-qc.zip" \
+            --freeze-zip "$RUNNER_TEMP/p12r-freeze.zip" \
+            --prereg-zip hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip \
+            --output p12r_confirm_analysis 2>&1 | tee analysis_preflight/analysis.log
+      - name: Verify output seals and distinguish scientific NO_GO from technical failure
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd p12r_confirm_analysis
+          sha256sum -c P12R_OUTPUT_SHA256SUMS.txt
+          python - <<'PYCODE'
+          import json,pathlib,csv
+          p=pathlib.Path('.');r=json.loads((p/'P12R_CONFIRM_STATISTICAL_REPORT_v05251.json').read_text())
+          def need(ok,msg):
+              if not ok:raise RuntimeError(msg)
+          need(r['status'] in ('NO_GO_P12R_CONFIRMATORY_STATISTICAL_GATES_NOT_MET','PASS_P12R_CONFIRMATORY_STATISTICAL_GATES_ONLY_NO_F3_RELEASE','INDETERMINATE_P12R_INVALID_BOOTSTRAP'),'ANALYSIS_STATUS')
+          need(r['primary_rows']==27648 and r['seed_blocks']==36 and r['confirmation_cases']==432 and r['model_sha256']=='6ae14949b3bdc5218d2420b84452b7326142869e843711d2cb0958672363de82','ANALYSIS_SCOPE')
+          need(all(r[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized')) and r['Congestion'] is None and r['FutureCongestion'] is None,'SCIENCE_LOCKS')
+          need(all(r[k]==0 for k in ('model_fits','confirmation_simulations_this_stage','diagnostic_rows_used','legacy_validation_rows_read','heldout_rows_read','official_F3_labels_constructed')),'NO_REFIT_NO_RELEASE')
+          need(r['bootstrap_rng_seed']==525250 and r['CI_coverage']==0.975 and r['bootstrap_replicates'] in (0,10000),'BOOTSTRAP_SCOPE')
+          need((r['status'].startswith('PASS_'))==all(r['gates'].values()),'GATE_DECISION')
+          for name,n in [('P12R_PER_SEED_AP.csv',36),('P12R_PAIRED_SCORES.csv',27648),('P12R_BOOTSTRAP_DELTA_AP.csv',r['bootstrap_replicates'])]:
+              with (p/name).open(newline='') as f:need(sum(1 for _ in csv.reader(f))==n+1,'ROW_COUNT')
+          print('PASS_TECHNICAL_ANALYSIS_OUTPUT_SEALS_SCIENCE_DECISION',r['status'])
+          PYCODE
+      - name: Always record stage fences
+        if: always()
+        run: |
+          mkdir -p analysis_preflight
+          printf '%s\n' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.51" 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'Frozen confirmatory analysis only. No refit, new simulations, heldout or diagnostic data. A scientific NO_GO is a valid completed result.' > analysis_preflight/science_fences.log
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: hcraf-f3-p12r-confirm-analysis-v05251-run-${{ github.run_id }}
+          path: |
+            analysis_preflight/
+            p12r_confirm_analysis/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: hcraf-f3-p12r-confirm-analysis-preflight-failure-v05251-run-${{ github.run_id }}
+          path: analysis_preflight/
+          if-no-files-found: error
+          retention-days: 90
