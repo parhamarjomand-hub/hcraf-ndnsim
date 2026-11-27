@@ -1,0 +1,140 @@
+name: HCRAF F3 P12R Frozen 72 Development Cases (v0.52.46)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-dev-v05246
+  cancel-in-progress: false
+jobs:
+  dev_collection:
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 360
+    env:
+      P12R_DEV_SOURCE_SHA256: "d90d0766984ee1d9d2599b69655605c0cf08d16d3369d08ca7c729c58e8bed10"
+      P12T_SOURCE_SHA256: "08b76621c5cb371fe04955d42b27f1a682f883f058ec06f050c60c42724fafa1"
+      P12U_SOURCE_SHA256: "469afe7567e375db8d07d16802ddde6dbf68bfd1aadd15c4f7d6ddd3761b401d"
+      P12V_SOURCE_SHA256: "871bcf33b5d3ed4745ccffc0b2529900b3e0987fffdde170656544d29174cf64"
+      P12S_SOURCE_SHA256: "587d792d7e7e7f1837da8df0490b6fba5a0394248917ae2f0b570bb925b594e0"
+      P12R_SOURCE_SHA256: "dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30"
+      V05231_SOURCE_SHA256: "f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265"
+      V05225_SOURCE_SHA256: "13ff992e6be059e0ba8f92bb1cf97f76d5c3ed78fe259cfe43b78f47c01ce287"
+      V0526_SOURCE_SHA256: "bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63"
+      V05216_SOURCE_SHA256: "33b4c9d18d1f0f3cef581ce4e2b8e983295eb678d67a3939a8b4faa786fcc0b5"
+      V05218_SOURCE_SHA256: "e4cf3e0b0784763746c3a690a9f716f70ecb27a5a88d9ad2a31fb798fa3992fb"
+      V05219_SOURCE_SHA256: "72e46581c8124e83372fb84f5bf014637d44d1c61f990cb8d0582f04de14b96f"
+      V05220_SOURCE_SHA256: "000f5d89c0490c46afdc5e4d741dcf85935e193f013dd37a4ed33299b7403082"
+      V05221_SOURCE_SHA256: "21f0ac48cb825a97b8deb8bc8b2377483a1140fe9ffa2e0aaa32872e26451df2"
+      V05222_SOURCE_SHA256: "351a57feec078bcadf9ba207087bb9774bee0c829aac38bacc5801ae810daddf"
+    steps:
+      - name: Install historical pinned-build prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          sed -i '/focal-backports/d' /etc/apt/sources.list
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          for attempt in 1 2 3; do
+            if [ "$attempt" -eq 2 ]; then
+              sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g; s#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            elif [ "$attempt" -eq 3 ]; then
+              sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g; s#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            fi
+            apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 update || true
+            if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 install -y --no-install-recommends git curl ca-certificates build-essential python3 python3-dev python3-setuptools python3-pip python3-pytest pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev libevent-dev graphviz doxygen time; then exit 0; fi
+          done
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate new source ZIP and exact member hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git rev-parse --is-shallow-repository)" = false
+          mkdir -p episode_output/p12r_dev_preflight
+          python3 - <<'PY'
+          import hashlib,json,os,pathlib,stat,subprocess,zipfile
+          name='hcraf_stage1am_f3_p12r_dev_collection_v05246_sources.zip'
+          raw=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==os.environ['P12R_DEV_SOURCE_SHA256']
+          assert subprocess.check_output(['git','show','HEAD:'+name])==raw
+          with zipfile.ZipFile(name) as z:
+            assert z.testzip() is None
+            m=json.loads(z.read('HCRAF_F3_P12R_DEV_SOURCE_SHA256_v05246.json'))
+            assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12R_DEV_SOURCE_SHA256_v05246.json'} and len(z.namelist())==len(set(z.namelist()))
+            assert not m['F3_ready'] and not m['GO_FREEZE'] and not m['training_ready'] and m['confirmation_cases_authorized']==0 and m['diagnostic_rows_authorized']==0
+            for n,h in m['files'].items():
+              p=pathlib.PurePosixPath(n)
+              assert p.parts[:2]==('hcraf','episode') and '..' not in p.parts and not p.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16)
+              d=pathlib.Path(n);assert not d.exists();b=z.read(n);assert hashlib.sha256(b).hexdigest()==h;d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+          print('PASS_NEW_SOURCE_MANIFEST')
+          PY
+      - name: Restore immutable original science-lock receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          run-id: "43567814962"
+          github-token: ${{ github.token }}
+          path: episode_output/v0526_preflight/lock_artifact
+      - name: Restore original P12K prereg receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-p12k-prereg-v05225-run-45195251299
+          run-id: "45195251299"
+          github-token: ${{ github.token }}
+          path: p12v_auth_p12k_receipt
+      - name: Retrieve only the P12Z causal QC receipt artifact, not diagnostic rows
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-p12z-independent-native-nack-drop-causal-witness-v05245-run-45950796539
+          run-id: "45950796539"
+          github-token: ${{ github.token }}
+          path: p12r_auth_p12z
+      - name: Authenticate and restore immutable build inputs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/restore_stage1am_f3_p12r_dev_v05246.py 2>&1 | tee episode_output/p12r_dev_preflight/restore.log
+      - name: Verify frozen prereg and new collection guard tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12r_prereg_v05237.py --output episode_output/p12r_dev_preflight/prereg_receipt.json
+          python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12r_dev_v05246.py' -v 2>&1 | tee episode_output/p12r_dev_preflight/tests.log
+      - name: Compile pinned native NFD executor (no historical simulations)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_p12r_dev_v05246.sh > episode_output/p12r_dev_preflight/build.log 2>&1
+          tail -30 episode_output/p12r_dev_preflight/build.log
+      - name: Execute six seed blocks of twelve original-condition development cases
+        shell: bash
+        run: |
+          set -euo pipefail
+          for seed in 24901 24902 24903 24904 24905 24906; do
+            python3 hcraf/episode/scripts/run_stage1am_f3_p12r_dev_v05246.py --seed "$seed" 2>&1 | tee "episode_output/p12r_dev_preflight/seed_${seed}.log"
+          done
+          python3 hcraf/episode/scripts/aggregate_stage1am_f3_p12r_dev_v05246.py 2>&1 | tee episode_output/p12r_dev_preflight/aggregate.log
+      - name: Always publish scientific fences and run provenance
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p episode_output/p12r_dev_preflight
+          printf '%s\n' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.46" 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'No fit, AP, confirmation or heldout authorized. Diagnostic rows excluded.' > episode_output/p12r_dev_preflight/science_fences.log
+      - name: Upload raw development cases and preflight evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12r-dev-72-raw-v05246-run-${{ github.run_id }}
+          path: |
+            episode_output/p12r_dev_preflight/
+            episode_output/p12v_native_preflight/
+            episode_output/stage1am_f3_p12r_v05246/
+          if-no-files-found: error
+          retention-days: 90
