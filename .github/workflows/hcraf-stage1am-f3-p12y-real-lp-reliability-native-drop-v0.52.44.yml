@@ -1,0 +1,305 @@
+name: "HCRAF F3 P12Y Pinned NDNLP Reliability Native Drop Probes (v0.52.44)"
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12y-v05244-negative-path-only
+  cancel-in-progress: false
+jobs:
+  native_dev_sentinel:
+    name: "P12Y pinned NDNLP reliability controls on two physical diagnostic probes; no model"
+    runs-on: ubuntu-latest
+    container: ubuntu:20.04
+    timeout-minutes: 180
+    env:
+      P12T_SOURCE_SHA256: "08b76621c5cb371fe04955d42b27f1a682f883f058ec06f050c60c42724fafa1"
+      P12U_SOURCE_SHA256: "469afe7567e375db8d07d16802ddde6dbf68bfd1aadd15c4f7d6ddd3761b401d"
+      P12V_SOURCE_SHA256: "871bcf33b5d3ed4745ccffc0b2529900b3e0987fffdde170656544d29174cf64"
+      P12W_SOURCE_SHA256: "df14191adc42d236495620690119e0b15199161703882f33ba928edfa4a46a3b"
+      P12X_SOURCE_SHA256: "df2b328887ee6a5fc0b0187871a7da25bac684cbd5f2e8cf2ce859ba10fdba7f"
+      P12Y_SOURCE_SHA256: "293e20a6163cf255a224ba61342a9a0258e522dcdab67fc80e803a37c2e110ac"
+      P12S_SOURCE_SHA256: "587d792d7e7e7f1837da8df0490b6fba5a0394248917ae2f0b570bb925b594e0"
+      P12R_SOURCE_SHA256: "dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30"
+      V05231_SOURCE_SHA256: "f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265"
+      V05225_SOURCE_SHA256: "13ff992e6be059e0ba8f92bb1cf97f76d5c3ed78fe259cfe43b78f47c01ce287"
+      V0526_SOURCE_SHA256: "bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63"
+      V05216_SOURCE_SHA256: "33b4c9d18d1f0f3cef581ce4e2b8e983295eb678d67a3939a8b4faa786fcc0b5"
+      V05218_SOURCE_SHA256: "e4cf3e0b0784763746c3a690a9f716f70ecb27a5a88d9ac2a31fb798fa3992fb"
+      V05219_SOURCE_SHA256: "72e46581c8124e83372fb84f5bf014637d44d1c61f990cb8d0582f04de14b96f"
+      V05220_SOURCE_SHA256: "000f5d89c0490c46afdc5e4d741dcf85935e193f013dd37a4ed33299b7403082"
+      V05221_SOURCE_SHA256: "21f0ac48cb825a97b8deb8bc8b2377483a1140fe9ffa2e0aaa32872e26451df2"
+      V05222_SOURCE_SHA256: "351a57feec078bcadf9ba207087bb9774bee0c829aac38bacc5801ae810daddf"
+    steps:
+      - name: Install proven bounded-retry ndnSIM prerequisites
+        id: deps
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          : > /tmp/p12t_apt_update.log
+          : > /tmp/p12t_apt_install.log
+          sed -i '/focal-backports/d' /etc/apt/sources.list
+          sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          for attempt in 1 2 3; do
+            if [ "$attempt" -eq 2 ]; then
+              sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            elif [ "$attempt" -eq 3 ]; then
+              sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+              sed -i 's#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+            fi
+            apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 update >> /tmp/p12t_apt_update.log 2>&1 || true
+            if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 \
+              -o Acquire::https::Timeout=25 install -y --no-install-recommends \
+              git curl ca-certificates build-essential \
+              python3 python3-dev python3-setuptools python3-pip python3-pytest \
+              pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev \
+              libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev \
+              libevent-dev graphviz doxygen time >> /tmp/p12t_apt_install.log 2>&1; then
+              echo "PASS_P12T_APT_ATTEMPT=$attempt" >> /tmp/p12t_apt_install.log
+              exit 0
+            fi
+          done
+          tail -50 /tmp/p12t_apt_install.log
+          exit 1
+
+      - name: Checkout all immutable ancestors; full history for Git provenance
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Trust only checked-out P12Y repository path inside Docker
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "${GITHUB_WORKSPACE:-}"
+          test -d "$GITHUB_WORKSPACE/.git"
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          test "$(git -C "$GITHUB_WORKSPACE" rev-parse --show-toplevel)" = "$GITHUB_WORKSPACE"
+          git -C "$GITHUB_WORKSPACE" rev-parse --verify HEAD
+          git -C "$GITHUB_WORKSPACE" rev-parse --is-shallow-repository | grep -Fx false
+          echo 'PASS_P12Y_CONTAINER_REPO_SAFE_DIRECTORY_AND_COMPLETE_HISTORY'
+      - name: Authenticate P12R prereg and P12S parent, SHA-locked sources
+        id: parent
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/p12y_native_preflight
+          python3 - <<'PY' > episode_output/p12y_native_preflight/parent_auth.log 2>&1
+          import urllib.request,json,os,subprocess,hashlib,pathlib,zipfile
+          repo=os.environ['GITHUB_REPOSITORY']
+          assert repo=='parhamarjomand-hub/hcraf-ndnsim'
+          token=os.environ['GH_TOKEN'];assert token
+          def get(path):
+            req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12T-v05239'})
+            with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          for run,sha,wf in [
+            (45833974569,'17ba4ba7dbb6ebf997954d36a5d6981a4151752d','hcraf-stage1am-f3-p12r-fair-comparator-prospective-prereg-v0.52.37.yml'),
+            (45835224040,'e4f0781bc26909c2311f0b76e3c2094da4f0c633','hcraf-stage1am-f3-p12s-local-causal-meter-compile-audit-v0.52.38.yml'),
+            (45844118722,'6e67ea60c20790cbefdd1a9aec717ff58b65b3e8','hcraf-stage1am-f3-p12t-native-ndnsim-dev-sentinel-v0.52.39.yml'),
+            (45866036207,'50e96029df98f3a24f6487446004bfc90ec6a808','hcraf-stage1am-f3-p12u-native-hook-provenance-gate-v0.52.40.yml'),
+            (45868303602,'f28d7bcae9ecce2aeff6748266bf0a857f97ab4f','hcraf-stage1am-f3-p12v-pinned-native-twelve-hook-dev-v0.52.41.yml'),
+            (45878775964,'7827ef881383a222bc3ec209fe65377183d4dfee','hcraf-stage1am-f3-p12w-readonly-12-slot-causal-forensic-v0.52.42.yml'),
+            (45879957294,'8404f966355d9907b2cc1169d2475003792c74fa','hcraf-stage1am-f3-p12x-two-native-negative-path-physical-probes-v0.52.43.yml')]:
+            a=get('/actions/runs/'+str(run))
+            assert a['status']=='completed' and a['conclusion']=='success'
+            assert a['head_sha']==sha and a['path'].endswith('/'+wf)
+            subprocess.check_call(['git','merge-base','--is-ancestor',sha,'HEAD'])
+            print('PASS_P12T_PARENT_RUN',run)
+          for id,digest,run in [
+            (15124026224,'0ec604d9134dd2ba9e7d167690ab7817c6875e2884d32ffe4e77e807cb70dd80',45833974569),
+            (15124357642,'d5f1ce3e32bda56d3b86d534afb963c84586ac96d45f65873ce388b11ed82481',45835224040),
+            (15143920353,'4d63c630f405ee6c7bca64906683888666ca7f3eb15bbc13d7346fc9b7edda49',45868303602),
+            (15146756647,'5b3723c5984126af10d22ad5d66c719d8452d440aacf23135e363542c7f2e70e',45878775964),
+            (15148183715,'789c7c09ce4766ef4a19c3cc88546a5d1b40ac42d602b01e556fa451566bcc3b',45879957294)]:
+            a=get('/actions/artifacts/'+str(id))
+            assert a['digest']=='sha256:'+digest and not a['expired'] and a['workflow_run']['id']==run
+          for name,env in [
+            ('hcraf_stage1am_f3_p12h_validation_v05222_sources.zip','V05222_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip','V05225_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip','V05231_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip','P12R_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12s_local_instrument_v05238_sources.zip','P12S_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12t_native_dev_smoke_v05239_sources.zip','P12T_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12u_native_hook_provenance_v05240_sources.zip','P12U_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12v_native_12_hook_dev_v05241_sources.zip','P12V_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12w_causal_readonly_gap_v05242_manifest_hotfix_sources.zip','P12W_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12x_native_negative_path_v05243_sources.zip','P12X_SOURCE_SHA256'),
+            ('hcraf_stage1am_f3_p12y_native_lp_reliability_v05244_sources.zip','P12Y_SOURCE_SHA256')]:
+            b=pathlib.Path(name).read_bytes()
+            assert hashlib.sha256(b).hexdigest()==os.environ[env],name
+            assert subprocess.check_output(['git','show','HEAD:'+name])==b,name
+            print('PASS_P12T_COMMITTED_SOURCE',name)
+          name='hcraf_stage1am_f3_p12t_native_dev_smoke_v05239_sources.zip'
+          with zipfile.ZipFile(name) as z:
+            assert z.testzip() is None
+            m=json.loads(z.read('HCRAF_F3_P12T_SOURCE_SHA256_v05239.json'))
+            assert m['selected_development_seed']==24901 and m['selected_development_cases']==1
+            assert m['B1_instrumentation_complete'] is False and m['model_training_authorized'] is False
+            assert set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12T_SOURCE_SHA256_v05239.json'}
+            for p,h in m['files'].items():assert hashlib.sha256(z.read(p)).hexdigest()==h,p
+          print('PASS_P12T_PROVENANCE_FROZEN_ORIGINAL_P12R_P12S_NO_HELDOUT')
+          PY
+          cat episode_output/p12y_native_preflight/parent_auth.log
+      - name: Restore original v0.52.0 frozen science-lock receipt (read-only)
+        id: old_lock
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+          run-id: "43567814962"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: episode_output/v0526_preflight/lock_artifact
+      - name: Retrieve original P12K prereg receipt without modifications
+        id: p12k_receipt
+        uses: actions/download-artifact@v4
+        with:
+          name: hcraf-f3-p12k-prereg-v05225-run-45195251299
+          run-id: "45195251299"
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: p12v_auth_p12k_receipt
+      - name: Restore original frozen pinned ns3 and verify overlays without overwrite
+        id: restore
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > episode_output/p12y_native_preflight/source_restore.log 2>&1
+          import hashlib,json,io,stat,zipfile,pathlib,os,subprocess
+          def sha(x):return hashlib.sha256(x).hexdigest()
+          receipt=pathlib.Path('p12v_auth_p12k_receipt/stage1am_f3_p12k_prospective_prereg_v05225/P12K_PREREG_RECEIPT.json')
+          assert receipt.is_file(), 'P12K_FROZEN_RECEIPT_MISSING'
+          k=json.loads(receipt.read_text())
+          assert k['GitHub_Run_ID']=='45195251299' and k['status']=='PASS_P12K_PROSPECTIVE_PREREG_ONLY_ZERO_SIM'
+          assert k['P12K_matrix_sha256']=='bebf302b14bd2096e63b8915c640f2db43e069de990f3832a0a98258b6688cbc'
+          # Same authorized historical helper used in all six successful P12L batches.
+          with zipfile.ZipFile('hcraf_stage1am_f3_p12h_validation_v05222_sources.zip') as z:
+            member='hcraf/episode/scripts/prepare_stage1am_f3_p12h_validation_v05222.py'
+            helper=z.read(member)
+          exec(compile(helper,member,'exec'),{'__name__':'__main__'})
+          for name,env,manifest in [
+            ('hcraf_stage1am_f3_p12k_prospective_prereg_v05225_sources.zip','V05225_SOURCE_SHA256','HCRAF_F3_P12K_SOURCE_SHA256_v05225.json'),
+            ('hcraf_stage1am_f3_p12l6_physical_v05231_cpp_initializer_hotfix_sources.zip','V05231_SOURCE_SHA256','HCRAF_F3_P12L6_SOURCE_SHA256_v05231.json'),
+            ('hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip','P12R_SOURCE_SHA256','HCRAF_F3_P12R_SOURCE_SHA256_v05237.json'),
+            ('hcraf_stage1am_f3_p12s_local_instrument_v05238_sources.zip','P12S_SOURCE_SHA256','HCRAF_F3_P12S_SOURCE_SHA256_v05238.json'),
+            ('hcraf_stage1am_f3_p12t_native_dev_smoke_v05239_sources.zip','P12T_SOURCE_SHA256','HCRAF_F3_P12T_SOURCE_SHA256_v05239.json'),
+            ('hcraf_stage1am_f3_p12v_native_12_hook_dev_v05241_sources.zip','P12V_SOURCE_SHA256','HCRAF_F3_P12V_SOURCE_SHA256_v05241.json'),
+            ('hcraf_stage1am_f3_p12x_native_negative_path_v05243_sources.zip','P12X_SOURCE_SHA256','HCRAF_F3_P12X_SOURCE_SHA256_v05243.json'),
+            ('hcraf_stage1am_f3_p12y_native_lp_reliability_v05244_sources.zip','P12Y_SOURCE_SHA256','HCRAF_F3_P12Y_SOURCE_SHA256_v05244.json')]:
+            raw=pathlib.Path(name).read_bytes();assert sha(raw)==os.environ[env],name
+            with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None
+              m=json.loads(z.read(manifest));assert set(z.namelist())==set(m['files'])|{manifest}
+              for member,h in m['files'].items():
+                path=pathlib.PurePosixPath(member)
+                assert path.parts[:2]==('hcraf','episode') and '..' not in path.parts and not path.is_absolute()
+                assert chr(92) not in member and not stat.S_ISLNK(z.getinfo(member).external_attr>>16)
+                contents=z.read(member);assert sha(contents)==h
+                dest=pathlib.Path(member);assert not dest.exists(),('OVERLAY_OVERWRITE',member)
+                dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(contents)
+              if name.endswith('p12y_native_lp_reliability_v05244_sources.zip'):
+                assert m['parent_P12X_run']==45879957294
+                assert m['development_seed']==24901
+                assert m['physical_probes']==['LP_RELIABILITY_NO_LOSS','LP_RELIABILITY_RX_LOSS']
+                assert not m['scientific_training_allowed'] and not m['heldout_release_authorized']
+                assert not m['F3_ready'] and not m['GO_FREEZE'] and not m['training_ready']
+              print('PASS_P12T_VERIFIED_OVERLAY',name,len(m['files']))
+          PY
+          cat episode_output/p12y_native_preflight/source_restore.log
+          python3 - <<'PYADAPTER'
+          import pathlib,zipfile,hashlib,os
+          name='hcraf_stage1am_f3_p12u_native_hook_provenance_v05240_sources.zip'
+          raw=pathlib.Path(name).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==os.environ['P12U_SOURCE_SHA256']
+          member='hcraf/episode/src/hcraf-stage1am-f3-p12u-local-nfd-hook-adapter-v05240.hpp'
+          with zipfile.ZipFile(name) as z:
+            assert z.testzip() is None
+            h=z.read(member)
+            dest=pathlib.Path(member);assert not dest.exists()
+            dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(h)
+          print('PASS_P12V_AUTHENTIC_P12U_NATIVE_ADAPTER_HEADER')
+          PYADAPTER
+      - name: Run prereg and causal meter contract tests; one-development-case preflight
+        id: tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12r_prereg_v05237.py' -v > episode_output/p12y_native_preflight/p12r_tests.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=hcraf/episode/scripts python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12s_instrument_v05238.py' -v > episode_output/p12y_native_preflight/p12s_tests.log 2>&1
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 -I hcraf/episode/src hcraf/episode/tests/p12s_local_causal_meter_v05238_test.cpp -o /tmp/p12t-p12s-local-meter-test
+          /tmp/p12t-p12s-local-meter-test > episode_output/p12y_native_preflight/p12s_cpp17.log
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12t_smoke_v05239.py' -v > episode_output/p12y_native_preflight/p12t_tests.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/run_stage1am_f3_p12t_smoke_v05239.py --preflight-only > episode_output/p12y_native_preflight/p12t_dev_preflight.log
+          python3 - <<'PYUPARENT'
+          import zipfile,pathlib,hashlib,os
+          p=pathlib.Path('hcraf_stage1am_f3_p12u_native_hook_provenance_v05240_sources.zip')
+          assert hashlib.sha256(p.read_bytes()).hexdigest()==os.environ['P12U_SOURCE_SHA256']
+          n='hcraf/episode/tests/test_stage1am_f3_p12u_nfd_adapter_v05240.cpp'
+          with zipfile.ZipFile(p) as z:
+            dest=pathlib.Path(n);assert not dest.exists()
+            dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(z.read(n))
+          PYUPARENT
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12v_native_hooks_v05241.py' -v > episode_output/p12y_native_preflight/p12v_tests.log 2>&1
+          g++ -std=c++17 -Wall -Wextra -Werror -pedantic -O2 -I hcraf/episode/src \
+            hcraf/episode/tests/test_stage1am_f3_p12u_nfd_adapter_v05240.cpp \
+            -o /tmp/p12v-standalone-adapter-test
+          /tmp/p12v-standalone-adapter-test > episode_output/p12y_native_preflight/p12u_cpp17_adapter.log
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/run_stage1am_f3_p12v_dev_v05241.py --preflight-only > episode_output/p12y_native_preflight/p12v_dev_preflight.log
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12x_native_negative_path_v05243.py' -v > episode_output/p12y_native_preflight/p12x_tests.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/run_stage1am_f3_p12x_v05243.py --preflight-only > episode_output/p12y_native_preflight/p12x_dev_preflight.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12y_native_lp_v05244.py' -v > episode_output/p12y_native_preflight/p12y_tests.log 2>&1
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/run_stage1am_f3_p12y_v05244.py --preflight-only > episode_output/p12y_native_preflight/p12y_dev_preflight.log 2>&1
+          tail -20 episode_output/p12y_native_preflight/p12y_tests.log
+          cat episode_output/p12y_native_preflight/p12y_dev_preflight.log
+          tail -17 episode_output/p12y_native_preflight/p12v_tests.log
+          cat episode_output/p12y_native_preflight/p12v_dev_preflight.log
+          tail -17 episode_output/p12y_native_preflight/p12t_tests.log
+          cat episode_output/p12y_native_preflight/p12t_dev_preflight.log
+      - name: Compile pinned NDNLP reliability native InterestDrop physical diagnostic modes
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash hcraf/episode/scripts/build_stage1am_f3_p12y_v05244.sh > episode_output/p12y_native_preflight/native_build.log 2>&1
+          tail -30 episode_output/p12y_native_preflight/native_build.log
+      - name: Execute TWO exploratory NDNLP reliability physical diagnostics with live NFD drop hook (NEVER P12R)
+        id: simulate
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/run_stage1am_f3_p12y_v05244.py > episode_output/p12y_native_preflight/native_development_run.log 2>&1
+          tail -20 episode_output/p12y_native_preflight/native_development_run.log
+      - name: Always record fail-closed scientific fences and stage outcomes
+        if: always()
+        shell: bash
+        env:
+          PARENT: ${{ steps.parent.outcome }}
+          RESTORE: ${{ steps.restore.outcome }}
+          TESTS: ${{ steps.tests.outcome }}
+          BUILD: ${{ steps.build.outcome }}
+          SIMULATE: ${{ steps.simulate.outcome }}
+        run: |
+          set -u
+          mkdir -p episode_output/p12y_native_preflight
+          echo "P12Y_STAGE=v0.52.44 RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA" > episode_output/p12y_native_preflight/science_fences.log
+          echo "parent=$PARENT restore=$RESTORE tests=$TESTS build=$BUILD simulate=$SIMULATE" >> episode_output/p12y_native_preflight/science_fences.log
+          echo "TWO EXPLORATORY NDNLP reliability and receiver-loss diagnostic probes using only 24901 schedule as stimulus, NOT P12R study cases. No confirmation 25001..25036, no heldout, no AP, no fits." >> episode_output/p12y_native_preflight/science_fences.log
+          echo "Native NFD onDroppedInterest must be counted separately from relay PHY receiver loss; zero events = unvalidated. training_ready=false F3_ready=false GO_FREEZE=false; all future states null." >> episode_output/p12y_native_preflight/science_fences.log
+      - name: Always upload build/preflight failure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12y-native-preflight-v05244-run-${{ github.run_id }}
+          path: episode_output/p12y_native_preflight/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload TWO unscored NDNLP reliability diagnostics; never valid P12R trials
+        if: ${{ steps.simulate.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12y-two-exploratory-lp-reliability-native-drop-physical-probes-v05244-run-${{ github.run_id }}
+          path: episode_output/stage1am_f3_p12y_v05244/
+          if-no-files-found: error
+          retention-days: 30
