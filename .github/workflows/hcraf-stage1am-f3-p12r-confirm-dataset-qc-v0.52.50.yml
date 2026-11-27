@@ -1,0 +1,123 @@
+name: HCRAF F3 P12R Independent Confirmation Dataset QC (v0.52.50)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-confirm-qc-v05250
+  cancel-in-progress: false
+jobs:
+  dataset_qc:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      SOURCE_SHA: "6e393acb44d50f3e4520ddf240b6ef39cebb96757eed47767968154a0e2379cb"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Authenticate source manifest and original run and artifact metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p qc_preflight
+          python3 - <<'PYCODE'
+          import hashlib,json,os,pathlib,stat,subprocess,urllib.request,zipfile
+          def need(x,msg):
+              if not x:raise RuntimeError(msg)
+          repo=os.environ['GITHUB_REPOSITORY'];need(repo=='parhamarjomand-hub/hcraf-ndnsim','WRONG_REPO')
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12R-QC-v05250'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          run=get('/actions/runs/45995680622')
+          sha='cc0b8dba61dc2d19192d5d0795d0fdfe086ff1b9'
+          need(run['status']=='completed' and run['conclusion']=='success' and run['head_sha']==sha and run['run_attempt']==1 and run['path']=='.github/workflows/hcraf-stage1am-f3-p12r-confirm-collection-v0.52.49.yml','PARENT_RUN')
+          subprocess.check_call(['git','merge-base','--is-ancestor',sha,'HEAD'])
+          frozen=get('/actions/runs/45991786037');fart=get('/actions/artifacts/15193723927')
+          need(frozen['status']=='completed' and frozen['conclusion']=='success' and frozen['head_sha']=='2adb3881a9968fe762233f966560cc80ec606aae' and frozen['path']=='.github/workflows/hcraf-stage1am-f3-p12r-dev-model-freeze-v0.52.48.yml' and frozen['updated_at']<run['created_at'],'FROZEN_PARENT')
+          need(not fart['expired'] and fart['workflow_run']['id']==45991786037 and fart['workflow_run']['head_sha']==frozen['head_sha'] and fart['digest']=='sha256:c68ed8da0f82229b04d5c20623142c2f46f355cb88e7aa129ba9171f24819f9c','FROZEN_ARTIFACT')
+          subprocess.check_call(['git','merge-base','--is-ancestor',frozen['head_sha'],sha])
+          blocks=[{'block': 1, 'artifact_id': 15199235693, 'sha256': '254e82143bed375146656134d9ee8419f015635aea0b01e9267a2339d9a572bd', 'size': 188124578, 'seeds': [25001, 25002, 25003, 25004, 25005, 25006]}, {'block': 2, 'artifact_id': 15198666971, 'sha256': '3050cf1c2aaef95ef955f53f53d8bfe98780110b0d7137bce9cb99fb6c14ed65', 'size': 188023771, 'seeds': [25007, 25008, 25009, 25010, 25011, 25012]}, {'block': 3, 'artifact_id': 15198851690, 'sha256': '2b65d87b44f705bb9f4fa3b347fefc56539f949ff1ff83835f8d1e6e00423075', 'size': 188090372, 'seeds': [25013, 25014, 25015, 25016, 25017, 25018]}, {'block': 4, 'artifact_id': 15201912451, 'sha256': 'd391d3ec8c917934c68dbd6ce0563fc2e6263cdfb4f35cc2a9d20539213cd24d', 'size': 188075597, 'seeds': [25019, 25020, 25021, 25022, 25023, 25024]}, {'block': 5, 'artifact_id': 15201523383, 'sha256': '4f384c3f00da021c10f97a09c61e3fce98d66cd418d9bb0e31d196d6b1b96198', 'size': 188065304, 'seeds': [25025, 25026, 25027, 25028, 25029, 25030]}, {'block': 6, 'artifact_id': 15202317461, 'sha256': 'ad1166b5491a7439c52f6dc13d90809e1990a7ee7d886a1e4ca8d4a134cef73e', 'size': 188261574, 'seeds': [25031, 25032, 25033, 25034, 25035, 25036]}]
+          arts=get('/actions/runs/45995680622/artifacts?per_page=100');need(arts['total_count']==6 and {x['id'] for x in arts['artifacts']}=={b['artifact_id'] for b in blocks},'EXACT_SIX_ARTIFACTS')
+          for b in blocks:
+              art=get('/actions/artifacts/'+str(b['artifact_id']))
+              need(not art['expired'] and art['name']==f"hcraf-f3-p12r-confirm-block-{b['block']}-v05249-run-45995680622" and art['workflow_run']['id']==45995680622 and art['workflow_run']['head_sha']==sha and art['digest']=='sha256:'+b['sha256'] and art['size_in_bytes']==b['size'],'PARENT_ARTIFACT')
+          pathlib.Path('qc_preflight/parent.json').write_text(json.dumps({'run_id':run['id'],'head_sha':sha,'blocks':blocks,'model_run':45991786037,'model_artifact':15193723927},indent=2))
+          name='hcraf_stage1am_f3_p12r_confirm_dataset_qc_v05250_sources.zip';raw=pathlib.Path(name).read_bytes();need(hashlib.sha256(raw).hexdigest()==os.environ['SOURCE_SHA'] and subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE_SHA')
+          with zipfile.ZipFile(name) as z:
+              mn='HCRAF_F3_P12R_CONFIRM_QC_SOURCE_SHA256_v05250.json';m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'SOURCE_MANIFEST')
+              need(all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized')) and m['Congestion'] is None and m['FutureCongestion'] is None and m['model_fits']==m['confirmation_simulations_authorized']==m['diagnostic_rows_used']==0 and m['confirmation_cases_read_authorized']==432,'SCIENCE_LOCKS')
+              for n,h in m['files'].items():
+                  p=pathlib.PurePosixPath(n);need(p.parts[:2]==('hcraf','episode') and '..' not in p.parts and not p.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH')
+                  b=z.read(n);need(hashlib.sha256(b).hexdigest()==h,'MEMBER_HASH');d=pathlib.Path(n);need(not d.exists(),'NO_OVERWRITE');d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+          print('PASS_SOURCE_AND_PARENT_AUTHENTICATED')
+          PYCODE
+      - name: Retrieve all six original ZIPs without extraction or recompression
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/p12r-confirm-raw"
+          python3 - <<'PYCODE'
+          import json,os,pathlib,subprocess,hashlib
+          p=pathlib.Path(os.environ['RUNNER_TEMP'])/'p12r-confirm-raw'
+          blocks=json.loads(pathlib.Path('qc_preflight/parent.json').read_text())['blocks']
+          for b in blocks:
+              i=b['artifact_id'];f=p/f'github-actions-artifact-{i}.zip'
+              subprocess.check_call(['curl','--fail','--silent','--show-error','--location','--retry','3','--max-time','600','-H','Authorization: Bearer '+os.environ['GH_TOKEN'],'-H','Accept: application/vnd.github+json',f'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/{i}/zip','-o',str(f)])
+              h=hashlib.sha256()
+              with f.open('rb') as stream:
+                  for chunk in iter(lambda:stream.read(1048576),b''):h.update(chunk)
+              if f.stat().st_size!=b['size'] or h.hexdigest()!=b['sha256']:raise RuntimeError('ARTIFACT_SHA')
+              print('PASS_RAW_BLOCK',b['block'])
+          PYCODE
+      - name: Test causal boundaries and fail-closed guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12r_confirm_dataset_v05250.py' -v 2>&1 | tee qc_preflight/tests.log
+      - name: Independently reconstruct all 27648 aligned confirmation rows; no scoring
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12r_confirm_dataset_v05250.py \
+            --raw-dir "$RUNNER_TEMP/p12r-confirm-raw" \
+            --prereg-zip hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip \
+            --output p12r_confirm_dataset_qc_pending 2>&1 | tee qc_preflight/audit.log
+      - name: Verify QC receipt and all output hashes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          import hashlib,json,pathlib
+          p=pathlib.Path('p12r_confirm_dataset_qc_pending');r=json.loads((p/'P12R_CONFIRM_DATASET_QC_RECEIPT_v05250.json').read_text())
+          if r['status']!='PASS_P12R_CONFIRM_DATASET_QC_ONLY_NO_SCORING_NO_F3_RELEASE' or r['primary_rows']!=27648 or r['decisions_audited']!=55296 or r['raw_files_checked']!=17280 or r['paired_times_match']!=216 or r['model_fits']!=0 or r['confirmation_cases']!=432 or r['new_AP_computed'] or r['new_bootstrap_computed'] or r['diagnostic_rows_used']!=0 or r['heldout_rows_read']!=0 or r['official_F3_labels_constructed']!=0 or r['F3_ready'] or r['GO_FREEZE'] or r['training_ready']:raise RuntimeError('QC_FAILED')
+          expected={'B1_confirmation_features.csv','R_confirmation_features.csv','confirmation_research_endpoint.csv','confirmation_audit_keys_NOT_FEATURES.csv','case_qc.csv'}
+          if set(r['output_sha256'])!=expected or {f.name for f in p.iterdir()}!=expected|{'P12R_CONFIRM_DATASET_QC_RECEIPT_v05250.json'}:raise RuntimeError('OUTPUT_SET')
+          if r['Congestion'] is not None or r['FutureCongestion'] is not None or r['heldout_release_authorized'] or r['Stage1AO_or_NSGAIII_authorized'] or r['model_sha256']!='6ae14949b3bdc5218d2420b84452b7326142869e843711d2cb0958672363de82':raise RuntimeError('FENCE_OR_MODEL')
+          for n,h in r['output_sha256'].items():
+              if hashlib.sha256((p/n).read_bytes()).hexdigest()!=h:raise RuntimeError('OUTPUT_HASH')
+          final=pathlib.Path('p12r_confirm_dataset_qc')
+          if final.exists():raise RuntimeError('NO_OVERWRITE')
+          p.rename(final)
+          print('PASS_CONFIRM_QC_RECEIPT_NO_SCORING_NO_RELEASE')
+          PYCODE
+      - name: Always publish stage fences
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p qc_preflight
+          printf '%s\n' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.50" 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'Confirmation data QC only. No new simulation, fit, AP, bootstrap, heldout, official F3 labels or diagnostic rows.' > qc_preflight/science_fences.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hcraf-f3-p12r-confirm-dataset-qc-v05250-run-${{ github.run_id }}
+          path: |
+            qc_preflight/
+            p12r_confirm_dataset_qc/
+          if-no-files-found: error
+          retention-days: 90
