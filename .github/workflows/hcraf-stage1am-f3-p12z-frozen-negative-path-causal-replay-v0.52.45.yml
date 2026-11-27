@@ -1,0 +1,143 @@
+name: HCRAF F3 P12Z Native Negative-Path Causal Replay Only (v0.52.45)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  readonly_negative_path_provenance:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      P12Z_SOURCE_SHA256: "ec13b6cd4a9785e17c3d869b83d087e4579fc00b13167000bdb164deaa3c56e6"
+      P12Z_X: p12z_original_x
+      P12Z_Y: p12z_original_y
+    steps:
+      - name: Checkout immutable history; no writable research sources
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Authenticate original P12X/P12Y runs, exact artifact digests and P12Z source archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PYAUTH'
+          import hashlib, io, json, os, pathlib, stat, subprocess, urllib.request, zipfile
+          repo='parhamarjomand-hub/hcraf-ndnsim'
+          assert os.environ['GITHUB_REPOSITORY']==repo
+          token=os.environ['GH_TOKEN']
+          assert token, 'MISSING_GH_TOKEN'
+          def get(route):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+route,
+                  headers={'Authorization':'Bearer '+token,'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12Z-immutable-readonly'})
+              with urllib.request.urlopen(req,timeout=30) as resp:
+                  return json.load(resp)
+          frozen=[
+              (45879957294, '8404f966355d9907b2cc1169d2475003792c74fa',
+               'hcraf-stage1am-f3-p12x-two-native-negative-path-physical-probes-v0.52.43.yml',
+               15148183715,'hcraf-f3-p12x-two-exploratory-nack-drop-physical-probes-v05243-run-45879957294',
+               '789c7c09ce4766ef4a19c3cc88546a5d1b40ac42d602b01e556fa451566bcc3b'),
+              (45939975523,'11b673e8be8c42f0a9a4caa7129513ca1d0421a2',
+               'hcraf-stage1am-f3-p12y-real-lp-reliability-native-drop-v0.52.44.yml',
+               15173779138,'hcraf-f3-p12y-two-exploratory-lp-reliability-native-drop-physical-probes-v05244-run-45939975523',
+               '719ab45ba835f1c11886bf68e1d93d301259b61b34d9d0bdf340b3972957d300')]
+          for rid,commit,workflow,aid,aname,digest in frozen:
+              a=get('/actions/runs/'+str(rid)); b=get('/actions/artifacts/'+str(aid))
+              assert a['status']=='completed' and a['conclusion']=='success'
+              assert a['head_sha']==commit and a['path'].endswith('/'+workflow)
+              subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+              assert b['id']==aid and b['name']==aname and not b['expired']
+              assert b['workflow_run']['id']==rid and b['digest']=='sha256:'+digest
+              print('PASS_P12Z_AUTHENTIC_PARENT_ARTIFACT_METADATA',rid,aid,digest)
+          source='hcraf_stage1am_f3_p12z_native_negative_causal_audit_v05245_sources.zip'
+          raw=pathlib.Path(source).read_bytes()
+          assert hashlib.sha256(raw).hexdigest()==os.environ['P12Z_SOURCE_SHA256']
+          assert subprocess.check_output(['git','show','HEAD:'+source])==raw
+          with zipfile.ZipFile(io.BytesIO(raw)) as z:
+              assert z.testzip() is None
+              mname='HCRAF_F3_P12Z_SOURCE_SHA256_v05245.json'
+              m=json.loads(z.read(mname))
+              assert m['status']=='READ_ONLY_DIAGNOSTIC_ONLY_NO_F3_GO'
+              assert not m['F3_ready'] and not m['GO_FREEZE'] and not m['training_ready']
+              assert not m['model_training_authorized'] and not m['new_AP_computed']
+              assert m['confirmation_seed_reads']==m['heldout_reads']==0
+              assert set(z.namelist())==set(m['files'])|{mname}
+              for name,h in m['files'].items():
+                  path=pathlib.PurePosixPath(name)
+                  assert path.parts[:2]==('hcraf','episode') and '..' not in path.parts and not path.is_absolute()
+                  assert chr(92) not in name and not stat.S_ISLNK(z.getinfo(name).external_attr>>16)
+                  content=z.read(name)
+                  assert hashlib.sha256(content).hexdigest()==h
+                  dest=pathlib.Path(name)
+                  assert not dest.exists(),('OVERWRITE_RESEARCH_SOURCE',name)
+                  dest.parent.mkdir(parents=True,exist_ok=True)
+                  dest.write_bytes(content)
+          print('PASS_P12Z_FROZEN_SOURCE_HASH_GIT_AND_PARENTS_NO_NEW_SIMS')
+          PYAUTH
+
+      - name: Retrieve original immutable P12X 128-decision physical diagnostics
+        uses: actions/download-artifact@v4
+        with:
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          run-id: 45879957294
+          name: hcraf-f3-p12x-two-exploratory-nack-drop-physical-probes-v05243-run-45879957294
+          path: p12z_original_x
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Retrieve original immutable P12Y 128-decision physical diagnostics
+        uses: actions/download-artifact@v4
+        with:
+          repository: parhamarjomand-hub/hcraf-ndnsim
+          run-id: 45939975523
+          name: hcraf-f3-p12y-two-exploratory-lp-reliability-native-drop-physical-probes-v05244-run-45939975523
+          path: p12z_original_y
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Independently SHA-check all artifact files and replay both native 75ms feature windows
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p episode_output/p12z_native_readonly
+          export PYTHONDONTWRITEBYTECODE=1
+          python3 -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12z_cross_probe_v05245.py' -v \
+            2>&1 | tee episode_output/p12z_native_readonly/guard_tests.log
+          python3 hcraf/episode/scripts/audit_stage1am_f3_p12z_cross_probe_v05245.py \
+            --p12x "$P12Z_X" --p12y "$P12Z_Y" \
+            --output episode_output/p12z_native_readonly/P12Z_FROZEN_NEGATIVE_NATIVE_CAUSAL_QC_v05245.json \
+            2>&1 | tee episode_output/p12z_native_readonly/audit.log
+          python3 - <<'PYVERIFY'
+          import json
+          p='episode_output/p12z_native_readonly/P12Z_FROZEN_NEGATIVE_NATIVE_CAUSAL_QC_v05245.json'
+          r=json.load(open(p))
+          assert r['status']=='PASS_P12Z_CAUSAL_NATIVE_NEGATIVE_PATH_WITNESS_ONLY_NO_F3_RELEASE'
+          assert r['native_Nack']['native_events']==128 and r['native_Nack']['decisions_with_positive_75ms_feature']==109
+          assert r['native_Drop']['native_events']==128 and r['native_Drop']['decisions_with_positive_75ms_feature']==17
+          assert r['L2_queue_drops_without_native_drop']==2791
+          assert r['diagnostic_evidence_not_trainable'] and not r['F3_ready'] and not r['GO_FREEZE']
+          assert not r['training_ready'] and not r['new_AP_computed'] and r['P12R_confirmation_cases_completed_this_stage']==0
+          print('PASS_P12Z_ONLY_CAUSAL_DIAGNOSTIC_WITNESS_NOT_F3_RELEASE')
+          PYVERIFY
+
+      - name: Always publish explicit P12Z fail-closed scientific status
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p episode_output/p12z_native_readonly
+          {
+            echo "P12Z_RUN_ID=$GITHUB_RUN_ID HEAD=$GITHUB_SHA"
+            echo 'F3_ready=false; GO_FREEZE=false; training_ready=false; Congestion=null; FutureCongestion=null'
+            echo 'P12X/P12Y fault-injected diagnostics may NEVER become P12R training or confirmation rows'
+            echo 'NO new simulations; NO model fits; NO AP; NO 25001..25036; heldout sealed'
+          } > episode_output/p12z_native_readonly/science_fences.log
+
+      - name: Upload read-only provenance and causal replay report only
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12z-independent-native-nack-drop-causal-witness-v05245-run-${{ github.run_id }}
+          path: episode_output/p12z_native_readonly/
+          retention-days: 90
+          if-no-files-found: error
