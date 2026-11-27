@@ -1,0 +1,252 @@
+name: HCRAF F3 P12R New Construct Confirmation 540 Cases and QC (v0.52.60)
+'on':
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-new-construct-confirm-v05260
+  cancel-in-progress: false
+jobs:
+  native_confirm:
+    runs-on: ubuntu-24.04
+    container: ubuntu:20.04
+    timeout-minutes: 360
+    env:
+      P12R56_SOURCE_SHA256: 3782b7c5643fc521eed08af5977899f09fd94432f3347095e86f7b5533e50b27
+      P12R56_PREREG_SHA256: 746889957c3d91523fa937e7a888cef4e50d847c8596760f6b833ccdafe28ab2
+      P12R56_PREREG: p12r56_auth/prereg.zip
+      P12R_DEV_SOURCE_SHA256: d90d0766984ee1d9d2599b69655605c0cf08d16d3369d08ca7c729c58e8bed10
+      P12T_SOURCE_SHA256: 08b76621c5cb371fe04955d42b27f1a682f883f058ec06f050c60c42724fafa1
+      P12U_SOURCE_SHA256: 469afe7567e375db8d07d16802ddde6dbf68bfd1aadd15c4f7d6ddd3761b401d
+      P12V_SOURCE_SHA256: 871bcf33b5d3ed4745ccffc0b2529900b3e0987fffdde170656544d29174cf64
+      P12S_SOURCE_SHA256: 587d792d7e7e7f1837da8df0490b6fba5a0394248917ae2f0b570bb925b594e0
+      P12R_SOURCE_SHA256: dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30
+      V05231_SOURCE_SHA256: f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265
+      V05225_SOURCE_SHA256: 13ff992e6be059e0ba8f92bb1cf97f76d5c3ed78fe259cfe43b78f47c01ce287
+      V0526_SOURCE_SHA256: bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63
+      V05216_SOURCE_SHA256: 33b4c9d18d1f0f3cef581ce4e2b8e983295eb678d67a3939a8b4faa786fcc0b5
+      V05218_SOURCE_SHA256: e4cf3e0b0784763746c3a690a9f716f70ecb27a5a88d9ac2a31fb798fa3992fb
+      V05219_SOURCE_SHA256: 72e46581c8124e83372fb84f5bf014637d44d1c61f990cb8d0582f04de14b96f
+      V05220_SOURCE_SHA256: 000f5d89c0490c46afdc5e4d741dcf85935e193f013dd37a4ed33299b7403082
+      V05221_SOURCE_SHA256: 21f0ac48cb825a97b8deb8bc8b2377483a1140fe9ffa2e0aaa32872e26451df2
+      V05222_SOURCE_SHA256: 351a57feec078bcadf9ba207087bb9774bee0c829aac38bacc5801ae810daddf
+      P12R60_AMEND: p12r56_auth/amendment.zip
+      P12R60_AMEND_SHA: cb5a67651f8342cec2883741ae59d89e606e50e23ce449c94c3e3b1002350e64
+      BLOCK: ${{ matrix.block }}
+    steps:
+    - name: Require first dispatch and no automatic repeat
+      shell: bash
+      run: |
+        set -euo pipefail
+        test "$GITHUB_RUN_ATTEMPT" = 1
+        test "$GITHUB_RUN_NUMBER" = 1
+    - name: Install historical pinned-build prerequisites
+      shell: bash
+      run: |
+        set -euo pipefail
+        export DEBIAN_FRONTEND=noninteractive
+        sed -i '/focal-backports/d' /etc/apt/sources.list
+        sed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+        for attempt in 1 2 3; do
+          if [ "$attempt" -eq 2 ]; then
+            sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g; s#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          elif [ "$attempt" -eq 3 ]; then
+            sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g; s#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list
+          fi
+          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 update || true
+          if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 install -y --no-install-recommends git curl ca-certificates build-essential python3 python3-dev python3-setuptools python3-pip python3-pytest pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev libevent-dev graphviz doxygen time; then exit 0; fi
+        done
+        exit 1
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Authenticate official preregistration and committed source packages
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        git config --global --add safe.directory "$GITHUB_WORKSPACE"
+        test "$(git rev-parse --is-shallow-repository)" = false
+        mkdir -p episode_output/p12r56_preflight p12r56_auth
+        python3 - <<'PYCODE'
+        import hashlib,json,os,pathlib,stat,subprocess,urllib.request,zipfile
+        def need(c,m):
+            if not c: raise RuntimeError(m)
+        repo=os.environ['GITHUB_REPOSITORY'];need(repo=='parhamarjomand-hub/hcraf-ndnsim','REPO')
+        def get(path):
+            q=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12R56'})
+            with urllib.request.urlopen(q,timeout=60) as r:return json.load(r)
+        rid=46044334756;aid=15221940873;commit='cd3c1c87351497e3be1093bf81c156bbc273c08f'
+        r=get('/actions/runs/'+str(rid));a=get('/actions/artifacts/'+str(aid))
+        need(r['status']=='completed' and r['conclusion']=='success' and r['head_sha']==commit and r['path']=='.github/workflows/hcraf-stage1am-f3-p12r-new-construct-prereg-v0.52.54.yml' and r['run_attempt']==1,'PREREG_RUN')
+        subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+        need(not a['expired'] and a['workflow_run']['id']==rid and a['workflow_run']['head_sha']==commit and a['digest']=='sha256:'+os.environ['P12R56_PREREG_SHA256'] and a['size_in_bytes']==180335,'PREREG_ARTIFACT')
+        pathlib.Path('episode_output/p12r56_preflight/parent.json').write_text(json.dumps(dict(run_id=rid,head_sha=commit,artifact_id=aid,digest=a['digest']),sort_keys=True,indent=2)+'\n')
+        archives=[('hcraf_stage1am_f3_p12r_dev_collection_v05246_sources.zip','P12R_DEV_SOURCE_SHA256','HCRAF_F3_P12R_DEV_SOURCE_SHA256_v05246.json',False),('hcraf_stage1am_f3_p12r_new_construct_confirm_v05260_sources.zip','P12R56_SOURCE_SHA256','HCRAF_F3_P12R_NEW_CONSTRUCT_CONFIRM_SOURCE_SHA256_v05260.json',True)]
+        for name,env,mn,pilot in archives:
+            raw=pathlib.Path(name).read_bytes()
+            need(hashlib.sha256(raw).hexdigest()==os.environ[env] and subprocess.check_output(['git','show','HEAD:'+name])==raw,'ARCHIVE_SHA:'+name)
+            with zipfile.ZipFile(name) as z:
+                m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'MANIFEST:'+name)
+                need(all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready')),'LOCK:'+name)
+                if pilot:need(m['pilot_cases_authorized']==0 and m['development_cases_authorized']==0 and m['confirmation_cases_authorized']==540 and m['model_fits_authorized']==0 and m['amendment_sha256']==os.environ['P12R60_AMEND_SHA'] and m['prereg_sha256']==os.environ['P12R56_PREREG_SHA256'] and m['Congestion'] is None and m['FutureCongestion'] is None and not m['heldout_release_authorized'] and not m['Stage1AO_or_NSGAIII_authorized'],'PILOT_LOCK')
+                else:need(m['confirmation_cases_authorized']==0 and m['diagnostic_rows_authorized']==0,'HISTORICAL_BUILD_ONLY')
+                for n,h in m['files'].items():
+                    p=pathlib.PurePosixPath(n);need(p.parts[:2]==('hcraf','episode') and '..' not in p.parts and not p.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH')
+                    b=z.read(n);d=pathlib.Path(n);need(hashlib.sha256(b).hexdigest()==h and not d.exists(),'MEMBER:'+n);d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+            print('PASS_AUTHENTIC_SOURCE',name)
+        PYCODE
+        curl --fail --silent --show-error --location --retry 3 --max-time 180 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/15221940873/zip' -o "$P12R56_PREREG"
+        echo "$P12R56_PREREG_SHA256  $P12R56_PREREG" | sha256sum -c -
+    - name: Audit prior declared seed namespace before any simulation
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 hcraf/episode/scripts/p12r60/history_guard.py episode_output/p12r56_preflight/historical_namespace.json
+    - name: Authenticate frozen amendment and check tracked confirmation namespace unconsumed
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 hcraf/episode/scripts/p12r60/confirm_guard.py provenance episode_output/p12r56_preflight/confirmation_provenance.json
+        curl --fail --silent --show-error --location --retry 3 --max-time 180 -H "Authorization: Bearer $GH_TOKEN" 'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/15231539274/zip' -o "$P12R60_AMEND"
+        echo "$P12R60_AMEND_SHA  $P12R60_AMEND" | sha256sum -c -
+        python3 hcraf/episode/scripts/p12r60/confirm_guard.py amendment "$P12R60_AMEND" "$P12R56_PREREG"
+    - name: Test prospective schedule and independent queue and wire audit guards
+      shell: bash
+      run: |
+        set -euo pipefail
+        PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/scripts/p12r60 -p 'test_confirm.py' -v 2>&1 | tee episode_output/p12r56_preflight/tests.log
+    - name: Restore immutable original science-lock receipt
+      uses: actions/download-artifact@v4
+      with:
+        name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+        run-id: '43567814962'
+        github-token: ${{ github.token }}
+        path: episode_output/v0526_preflight/lock_artifact
+    - name: Restore original P12K prereg receipt
+      uses: actions/download-artifact@v4
+      with:
+        name: hcraf-f3-p12k-prereg-v05225-run-45195251299
+        run-id: '45195251299'
+        github-token: ${{ github.token }}
+        path: p12v_auth_p12k_receipt
+    - name: Retrieve only the P12Z causal QC receipt artifact, not diagnostic rows
+      uses: actions/download-artifact@v4
+      with:
+        name: hcraf-f3-p12z-independent-native-nack-drop-causal-witness-v05245-run-45950796539
+        run-id: '45950796539'
+        github-token: ${{ github.token }}
+        path: p12r_auth_p12z
+    - name: Authenticate and restore immutable build inputs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        python3 hcraf/episode/scripts/restore_stage1am_f3_p12r_dev_v05246.py 2>&1 | tee episode_output/p12r56_preflight/restore.log
+    - name: Compile pinned ndnSIM confirmation executor
+      shell: bash
+      run: |
+        set -euo pipefail
+        bash hcraf/episode/scripts/build_stage1am_f3_p12r_new_construct_confirm_v05260.sh > episode_output/p12r56_preflight/build.log 2>&1 || { tail -100 episode_output/p12r56_preflight/build.log; exit 1; }
+        tail -30 episode_output/p12r56_preflight/build.log
+    - name: Execute and audit exactly 90 locked confirmation cases
+      shell: bash
+      run: |
+        set -euo pipefail
+        PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/p12r60/pilot_audit.py --prereg "$P12R56_PREREG" --amendment "$P12R60_AMEND" --ns3 episode_sources/ns-3 --out episode_output/p12r60_confirm --block "$BLOCK" 2>&1 | tee episode_output/p12r56_preflight/confirm.log
+        test -f episode_output/p12r60_confirm/BLOCK_RECEIPT.json
+    - name: Always publish science fences
+      if: always()
+      shell: bash
+      run: |
+        mkdir -p episode_output/p12r56_preflight
+        printf '%s\n' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.60 BLOCK=$BLOCK" 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'Confirmation collection and engineering audit only; no AP, fit, bootstrap, heldout or official labels.' > episode_output/p12r56_preflight/science_fences.log
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: hcraf-f3-p12r-new-construct-confirm-block-${{ matrix.block }}-v05260-run-${{ github.run_id }}
+        path: |
+          episode_output/p12r56_preflight/
+          episode_output/p12r60_confirm/
+        if-no-files-found: error
+        retention-days: 90
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: hcraf-f3-p12r-new-construct-confirm-failure-block-${{ matrix.block }}-v05260-run-${{ github.run_id }}
+        path: |
+          episode_output/p12r56_preflight/
+          episode_output/p12r60_confirm/
+        if-no-files-found: warn
+        retention-days: 90
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix:
+        block:
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
+        - 6
+    name: Confirmation block ${{ matrix.block }} (engineering only)
+  aggregate_qc:
+    needs: native_confirm
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      SOURCE_SHA: 3782b7c5643fc521eed08af5977899f09fd94432f3347095e86f7b5533e50b27
+      P12R56_PREREG: prereg.zip
+      P12R60_AMEND: amendment.zip
+    steps:
+    - uses: actions/checkout@v4
+    - name: Authenticate source and both frozen contracts
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        test "$GITHUB_RUN_ATTEMPT" = 1
+        test "$GITHUB_RUN_NUMBER" = 1
+        python3 - <<'PYCODE'
+        import pathlib,zipfile,hashlib,json,os,subprocess
+        p=pathlib.Path('hcraf_stage1am_f3_p12r_new_construct_confirm_v05260_sources.zip'); b=p.read_bytes(); assert hashlib.sha256(b).hexdigest()==os.environ['SOURCE_SHA'] and b==subprocess.check_output(['git','show','HEAD:'+p.name])
+        with zipfile.ZipFile(p) as z:
+         m=json.loads(z.read('HCRAF_F3_P12R_NEW_CONSTRUCT_CONFIRM_SOURCE_SHA256_v05260.json')); assert z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{'HCRAF_F3_P12R_NEW_CONSTRUCT_CONFIRM_SOURCE_SHA256_v05260.json'}
+         assert m['confirmation_cases_authorized']==540 and m['development_cases_authorized']==0 and m['pilot_cases_authorized']==0 and m['model_fits_authorized']==0 and not m['F3_ready'] and not m['GO_FREEZE'] and not m['training_ready']
+         for n,h in m['files'].items():
+          raw=z.read(n); assert hashlib.sha256(raw).hexdigest()==h
+          if n.startswith('hcraf/episode/scripts/p12r60/'):
+           dest=pathlib.Path(n); assert '..' not in dest.parts and not dest.exists();dest.parent.mkdir(parents=True,exist_ok=True);dest.write_bytes(raw)
+        PYCODE
+        curl --fail --silent --show-error --location --retry 3 --max-time 180 -H "Authorization: Bearer $GH_TOKEN" 'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/15221940873/zip' -o prereg.zip
+        curl --fail --silent --show-error --location --retry 3 --max-time 180 -H "Authorization: Bearer $GH_TOKEN" 'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/15231539274/zip' -o amendment.zip
+        PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/scripts/p12r60 -p test_confirm.py -v
+    - uses: actions/download-artifact@v4
+      with:
+        pattern: hcraf-f3-p12r-new-construct-confirm-block-*-v05260-run-${{ github.run_id }}
+        path: collected
+        merge-multiple: false
+    - name: Verify exact six-block case set and all raw seals, no AP
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p final_qc
+        PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/p12r60/confirm_guard.py aggregate prereg.zip amendment.zip collected final_qc/CONFIRM_QC_RECEIPT.json
+        python3 - <<'PYCODE'
+        import json
+        r=json.load(open('final_qc/CONFIRM_QC_RECEIPT.json')); assert r['cases']==540 and r['raw_files_verified']==9720 and r['decisions']==68040 and r['blocks']==6 and r['model_fits']==0 and not r['new_AP_computed'] and not r['new_bootstrap_computed'] and not r['F3_ready'] and not r['GO_FREEZE'] and not r['training_ready']
+        print(r['status'])
+        PYCODE
+    - uses: actions/upload-artifact@v4
+      with:
+        name: hcraf-f3-p12r-new-construct-confirm-qc-v05260-run-${{ github.run_id }}
+        path: final_qc/
+        if-no-files-found: error
+        retention-days: 90
