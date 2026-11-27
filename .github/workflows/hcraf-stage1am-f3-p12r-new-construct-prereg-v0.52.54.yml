@@ -1,0 +1,107 @@
+name: HCRAF F3 P12R Prospective Construct Contract (v0.52.54)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-new-construct-v05254
+  cancel-in-progress: false
+jobs:
+  prereg:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      SOURCE_SHA: "054a547db05d69ccc4de8c8ab25b92f0ad9a92af98725b6487b202c123251512"
+      PARENT_SHA: "a992a3cd96f2ad25370771e4ef5a78a5b6061ca979a36523628a4618ed2f444c"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Authenticate parent provenance and exact committed source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prereg_preflight
+          python - <<'PYCODE'
+          import hashlib,json,os,pathlib,stat,subprocess,urllib.request,zipfile
+          def need(ok,msg):
+              if not ok:raise RuntimeError(msg)
+          repo=os.environ['GITHUB_REPOSITORY'];need(repo=='parhamarjomand-hub/hcraf-ndnsim','REPO')
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-PREREG-v05254'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          rid=46042882665;aid=15221646450;commit='0b5a299083f85a7b431803b84d6791da64f8aef2'
+          r=get('/actions/runs/'+str(rid));a=get('/actions/artifacts/'+str(aid))
+          need(r['status']=='completed' and r['conclusion']=='success' and r['head_sha']==commit and r['path']=='.github/workflows/hcraf-stage1am-f3-p12r-construct-feasibility-v0.52.53.yml' and r['run_attempt']==1,'PARENT_RUN')
+          subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+          need(not a['expired'] and a['workflow_run']['id']==rid and a['workflow_run']['head_sha']==commit and a['digest']=='sha256:'+os.environ['PARENT_SHA'] and a['size_in_bytes']==6576,'PARENT_ARTIFACT')
+          pathlib.Path('prereg_preflight/parent.json').write_text(json.dumps(dict(run_id=rid,head_sha=commit,artifact_id=aid,digest=a['digest']),sort_keys=True,indent=2)+'\n')
+          name='hcraf_stage1am_f3_p12r_new_construct_prereg_v05254_sources.zip';raw=pathlib.Path(name).read_bytes();need(hashlib.sha256(raw).hexdigest()==os.environ['SOURCE_SHA'] and subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE_SHA')
+          with zipfile.ZipFile(name) as z:
+              mn='HCRAF_F3_P12R_NEW_CONSTRUCT_SOURCE_SHA256_v05254.json';m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'SOURCE_MANIFEST')
+              need(all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized','simulations_authorized','model_fits_authorized','confirmation_authorized')) and m['Congestion'] is None and m['FutureCongestion'] is None,'LOCKS')
+              for n,h in m['files'].items():
+                  p=pathlib.PurePosixPath(n);need(n.startswith('hcraf/episode/docs/1AM/F3_P12R_NEW_CONSTRUCT_v0.52.54/') and '..' not in p.parts and not p.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH')
+                  b=z.read(n);need(hashlib.sha256(b).hexdigest()==h,'MEMBER_SHA');d=pathlib.Path(n);need(not d.exists(),'NO_OVERWRITE');d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+          print('PASS_AUTHENTICATED_PREREG_AND_PARENT')
+          PYCODE
+      - name: Retrieve exact construct feasibility receipt artifact only
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 --max-time 120 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/15221646450/zip' -o "$RUNNER_TEMP/p12r-construct.zip"
+          echo "$PARENT_SHA  $RUNNER_TEMP/p12r-construct.zip" | sha256sum -c -
+      - name: Test boundaries, partitions, balanced paired schedules and locks
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s 'hcraf/episode/docs/1AM/F3_P12R_NEW_CONSTRUCT_v0.52.54/' -p 'test_contract.py' -v 2>&1 | tee prereg_preflight/tests.log
+      - name: Generate locked prospective plan and schedules, no simulation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python 'hcraf/episode/docs/1AM/F3_P12R_NEW_CONSTRUCT_v0.52.54/contract.py' --parent "$RUNNER_TEMP/p12r-construct.zip" --out p12r_prereg 2>&1 | tee prereg_preflight/contract.log
+      - name: Verify exact prospective seals and preserve all science fences
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          import hashlib,json,pathlib
+          d=pathlib.Path('p12r_prereg');r=json.loads((d/'PREREG_RECEIPT.json').read_text())
+          assert r['status']=='PASS_P12R_NEW_CONSTRUCT_PREREG_ONLY_NO_EXECUTION_NO_RELEASE'
+          assert r['files']=={'LOCKED_MATRIX.csv': '5a20633304b42e7061fdf708286477483d746fbc279f6c116f704fc35efd3bc1', 'LOCKED_PROBE_SCHEDULE.csv': '831a47ec42bb90afd7248e1a13bec66f842e52853c347460b6d74755d5626b8a', 'PLAN.json': '258cefbfa19160defbf0dc14d08bcb8f01b964910b19ffaf5779b45b135b5669'}
+          assert all(hashlib.sha256((d/n).read_bytes()).hexdigest()==h for n,h in r['files'].items())
+          assert r['planned_cases']=={'pilot':45,'development':180,'confirmation':540} and r['planned_decisions']==96390
+          assert all(r[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized','construct_validated','simulations_authorized','model_fits_authorized','confirmation_authorized')) and r['Congestion'] is None and r['FutureCongestion'] is None
+          assert all(r[k]==0 for k in ('model_fits','rows_read','simulations','official_F3_labels_constructed'))
+          print('PASS_EXACT_PROSPECTIVE_CONTRACT_NO_EXECUTION')
+          PYCODE
+      - name: Always record science fences
+        if: always()
+        run: |
+          mkdir -p prereg_preflight
+          printf '%s\n' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.54" 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'Prospective contract only; prior NO_GO preserved; no simulation, fit, scoring, official labels or release.' > prereg_preflight/science_fences.log
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: hcraf-f3-p12r-new-construct-prereg-v05254-run-${{ github.run_id }}
+          path: |
+            prereg_preflight/
+            p12r_prereg/
+          if-no-files-found: error
+          retention-days: 90
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: hcraf-f3-p12r-new-construct-prereg-failure-v05254-run-${{ github.run_id }}
+          path: prereg_preflight/
+          if-no-files-found: error
+          retention-days: 90
