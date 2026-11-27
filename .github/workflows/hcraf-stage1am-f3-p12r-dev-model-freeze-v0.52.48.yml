@@ -1,0 +1,115 @@
+name: HCRAF F3 P12R DEV Model Freeze (v0.52.48)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-dev-model-freeze-v05248
+  cancel-in-progress: false
+jobs:
+  freeze_dev_models:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      SOURCE_SHA: "b78396fe56d5a044e99dfa09156d033cdf2c836f14a700f03c86a64894edca3c"
+      QC_SHA: "acb9d4891991e8425ef6ae85f0587ea192f441e47a7f54176736ae584ac61b2b"
+      PREREG_SHA: "dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Authenticate source and immutable QC parent
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p freeze_preflight
+          python - <<'PYCODE'
+          import hashlib,json,os,pathlib,stat,subprocess,urllib.request,zipfile
+          def need(ok,msg):
+              if not ok:raise RuntimeError(msg)
+          repo=os.environ['GITHUB_REPOSITORY'];need(repo=='parhamarjomand-hub/hcraf-ndnsim','WRONG_REPO')
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12R-FREEZE-v05248'})
+              with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+          run=get('/actions/runs/45966812511');art=get('/actions/artifacts/15182951916')
+          commit='9e14efe0c721c4d31a38bad98ec5494b14ad77c4'
+          need(run['status']=='completed' and run['conclusion']=='success' and run['head_sha']==commit and run['path']=='.github/workflows/hcraf-stage1am-f3-p12r-dev-dataset-qc-v0.52.47.yml','QC_PARENT')
+          subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD'])
+          need(not art['expired'] and art['workflow_run']['id']==45966812511 and art['workflow_run']['head_sha']==commit and art['digest']=='sha256:'+os.environ['QC_SHA'] and art['size_in_bytes']==180514,'QC_ARTIFACT')
+          pathlib.Path('freeze_preflight/parent.json').write_text(json.dumps({'run_id':run['id'],'head_sha':commit,'artifact_id':art['id'],'digest':art['digest'],'size_in_bytes':art['size_in_bytes']},indent=2))
+          name='hcraf_stage1am_f3_p12r_dev_model_freeze_v05248_sources.zip';raw=pathlib.Path(name).read_bytes()
+          need(hashlib.sha256(raw).hexdigest()==os.environ['SOURCE_SHA'] and subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE_SHA')
+          with zipfile.ZipFile(name) as z:
+              mn='HCRAF_F3_P12R_DEV_MODEL_FREEZE_SOURCE_SHA256_v05248.json';m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'SOURCE_MANIFEST')
+              need(all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized')) and m['Congestion'] is None and m['FutureCongestion'] is None and m['development_model_fits_authorized']==2 and m['confirmation_cases_authorized']==m['diagnostic_rows_authorized']==0,'LOCKS')
+              for n,h in m['files'].items():
+                  p=pathlib.PurePosixPath(n);need(p.parts[:2]==('hcraf','episode') and '..' not in p.parts and not p.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH')
+                  b=z.read(n);need(hashlib.sha256(b).hexdigest()==h,'MEMBER_HASH');d=pathlib.Path(n);need(not d.exists(),'NO_OVERWRITE');d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+          print('PASS_SOURCE_AND_QC_PARENT_AUTHENTICATED')
+          PYCODE
+      - name: Retrieve exact QC artifact ZIP (no historical or confirmatory data)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location --retry 3 --max-time 300 \
+            -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' \
+            'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/15182951916/zip' \
+            -o "$RUNNER_TEMP/p12r-qc.zip"
+          echo "$QC_SHA  $RUNNER_TEMP/p12r-qc.zip" | sha256sum -c -
+          echo "$PREREG_SHA  hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip" | sha256sum -c -
+      - name: Test fixed algorithm and fail-closed guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHONDONTWRITEBYTECODE=1 python -m unittest discover -s hcraf/episode/tests -p 'test_stage1am_f3_p12r_dev_models_v05248.py' -v 2>&1 | tee freeze_preflight/tests.log
+      - name: Fit exactly two DEV models and freeze before any confirmation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python hcraf/episode/scripts/freeze_stage1am_f3_p12r_dev_models_v05248.py \
+            --qc-zip "$RUNNER_TEMP/p12r-qc.zip" \
+            --prereg-zip hcraf_stage1am_f3_p12r_fair_comparator_prereg_v05237_sources.zip \
+            --output p12r_frozen_models 2>&1 | tee freeze_preflight/fit.log
+      - name: Verify sealed model hash and scientific fences
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd p12r_frozen_models
+          sha256sum -c P12R_FROZEN_MODEL_SHA256SUMS.txt
+          python - <<'PYCODE'
+          import json,hashlib,pathlib
+          p=pathlib.Path('.');r=json.loads((p/'P12R_DEV_MODEL_FREEZE_RECEIPT_v05248.json').read_text());b=(p/'P12R_FROZEN_FULL_DEV_MODELS_v05248.json').read_bytes();m=json.loads(b)
+          def need(ok):
+              if not ok:raise RuntimeError('FREEZE_RECEIPT_INVALID')
+          need(r['status']=='PASS_P12R_TWO_DEV_MODELS_FROZEN_ONLY_NO_CONFIRMATION_NO_F3_RELEASE' and r['model_fits']==2 and r['trained_on_rows']==4608 and r['model_sha256']==hashlib.sha256(b).hexdigest())
+          need(all(r[k] is False and m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized','new_AP_computed','new_bootstrap_computed')) and not r['confirmation_execution_authorized'])
+          need(all(r[k]==m[k]==0 for k in ('confirmation_rows_read','confirmation_simulations_this_stage','diagnostic_rows_used','legacy_validation_rows_read','heldout_rows_read','official_F3_labels_constructed')))
+          need(m['Congestion'] is None and m['FutureCongestion'] is None)
+          for key,label in [('local_model','B1'),('remote_model','R')]:
+              data=(json.dumps(m[key],sort_keys=True,indent=2,allow_nan=False)+'\n').encode()
+              need(hashlib.sha256(data).hexdigest()==r[label+'_model_sha256'])
+          print('PASS_FROZEN_MODEL_HASHES_NO_CONFIRMATION_NO_F3_RELEASE',r['model_sha256'])
+          PYCODE
+      - name: Always record stage fences
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p freeze_preflight
+          printf '%s\n' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.48" 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'DEV-only fit. No AP, bootstrap, independent confirmation, heldout, diagnostic rows or official F3 labels.' > freeze_preflight/science_fences.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hcraf-f3-p12r-dev-model-freeze-v05248-run-${{ github.run_id }}
+          path: |
+            freeze_preflight/
+            p12r_frozen_models/
+          if-no-files-found: error
+          retention-days: 90
