@@ -1,0 +1,66 @@
+name: HCRAF F3 P12R Scoped Evidence Review (v0.52.69)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      SOURCE_SHA: c533df0f14ac981bb726796c292289c76540a915543f5d85f022a284d255c869
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Authenticate committed review source and exact parent sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PYCODE'
+          import zipfile,io,pathlib,os,hashlib,subprocess,json
+          P=pathlib.Path; sha=lambda b:hashlib.sha256(b).hexdigest()
+          assert os.environ['GITHUB_RUN_ATTEMPT']=='1'
+          name='hcraf_stage1am_f3_p12r_direct_cost_review_v05269_sources.zip'; mn='HCRAF_F3_P12R_DIRECT_COST_REVIEW_SOURCE_SHA256_v05269.json'; b=P(name).read_bytes()
+          assert sha(b)==os.environ['SOURCE_SHA'] and b==subprocess.check_output(['git','show','HEAD:'+name])
+          with zipfile.ZipFile(io.BytesIO(b)) as z:
+              m=json.loads(z.read(mn)); assert z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn}
+              assert all(m[k]==0 for k in ('simulation_runs_authorized','model_fits_authorized','official_labels_authorized','heldout_rows_authorized'))
+              assert all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','construct_validated','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized')) and m['Congestion'] is None and m['FutureCongestion'] is None
+              for k,h in m['files'].items():
+                  assert not P(k).is_absolute() and '..' not in P(k).parts and sha(z.read(k))==h
+              for ref,n,h,paths in m['parents']:
+                  subprocess.check_call(['git','merge-base','--is-ancestor',ref,'HEAD']); old=subprocess.check_output(['git','show',ref+':'+n]); assert sha(old)==h
+                  with zipfile.ZipFile(io.BytesIO(old)) as o:
+                      assert all(o.read(k)==z.read(k) for k in paths)
+              z.extractall('review_source')
+          print('PASS_EXACT_REVIEW_AND_PARENT_SOURCES')
+          PYCODE
+      - name: Test scientific release guards
+        run: python -m unittest discover -s review_source/hcraf/episode/scripts/p12r69 -v
+      - name: Authenticate 11 official artifacts and replay all 360 raw cases and locked statistics
+        run: python review_source/hcraf/episode/scripts/p12r69/review.py --artifacts review_artifacts --out review_result --download --full
+      - name: Verify final scientific fences
+        run: |
+          python - <<'PYCODE'
+          import json
+          r=json.load(open('review_result/REVIEW_RECEIPT.json'))
+          assert r['status']=='PASS_P12R69_SCOPED_EVIDENCE_REVIEW_RELEASE_PENDING'
+          assert r['confirmation_cases']==r['full_raw_cases_replayed']==360 and r['raw_files_verified']==6840 and r['analysis_files_byte_identical']==6 and r['all_gates_passed']==26
+          assert r['simulation_runs_new']==r['model_fits']==r['official_labels']==r['heldout_rows_read']==0
+          assert all(r[k] is False for k in ('F3_ready','GO_FREEZE','training_ready','construct_validated','heldout_release_authorized','Stage1AO_or_NSGAIII_authorized')) and r['Congestion'] is None and r['FutureCongestion'] is None
+          assert r['review']['scope_amendment_approved'] is False and r['prior_NO_GO_preserved']
+          print(r['status'])
+          PYCODE
+      - uses: actions/upload-artifact@v4
+        with:
+          name: hcraf-f3-p12r-direct-cost-review-v05269-run-${{ github.run_id }}
+          path: review_result/
+          if-no-files-found: error
+          retention-days: 90
