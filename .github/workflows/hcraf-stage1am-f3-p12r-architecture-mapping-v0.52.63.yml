@@ -1,0 +1,91 @@
+name: HCRAF F3 P12R Architecture Mapping Audit (v0.52.63)
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-architecture-mapping-v05263
+  cancel-in-progress: false
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13.5'
+      - name: Authenticate sources and official result ancestry
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p mapping_preflight inputs
+          python - <<'PYCODE'
+          import hashlib,json,os,pathlib,stat,subprocess,time,urllib.request,zipfile
+          P=pathlib.Path
+          def need(c,m):
+              if not c: raise RuntimeError(m)
+          def sha(b):return hashlib.sha256(b).hexdigest()
+          repo=os.environ['GITHUB_REPOSITORY'];need(repo=='parhamarjomand-hub/hcraf-ndnsim','REPO');need(os.environ['GITHUB_RUN_ATTEMPT']=='1','FIRST_ATTEMPT')
+          name='hcraf_stage1am_f3_p12r_architecture_mapping_v05263_sources.zip';raw=P(name).read_bytes();need(sha(raw)=='d7f50577b14acea8b39d8898650d22cc1be1e094bd9c0b71d4415d4ab79d11c9' and subprocess.check_output(['git','show','HEAD:'+name])==raw,'SOURCE')
+          old='hcraf_stage1am_f3_p12r_new_construct_confirm_v05260_sources.zip';need(sha(P(old).read_bytes())=='3782b7c5643fc521eed08af5977899f09fd94432f3347095e86f7b5533e50b27' and subprocess.check_output(['git','show','HEAD:'+old])==P(old).read_bytes(),'EXECUTOR_SOURCE')
+          with zipfile.ZipFile(name) as z:
+              mn='HCRAF_F3_P12R_ARCHITECTURE_MAPPING_SOURCE_SHA256_v05263.json';m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'MANIFEST')
+              need(all(m[k]==v for k,v in {'F3_ready': False, 'GO_FREEZE': False, 'training_ready': False, 'Congestion': None, 'FutureCongestion': None, 'construct_validated': False, 'heldout_release_authorized': False, 'Stage1AO_or_NSGAIII_authorized': False}.items()) and m['model_fits_authorized']==m['simulations_authorized']==0,'LOCKS')
+              for n,h in m['files'].items():
+                  q=pathlib.PurePosixPath(n);need(q.parts[:4]==('hcraf','episode','scripts','p12r63') and '..' not in q.parts and not q.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH');b=z.read(n);need(sha(b)==h,'MEMBER');d=P(n);need(not d.exists(),'NO_OVERWRITE');d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)
+          parents={46044334756: ('cd3c1c87351497e3be1093bf81c156bbc273c08f', 15221940873, 180335, '746889957c3d91523fa937e7a888cef4e50d847c8596760f6b833ccdafe28ab2'), 46068985498: ('737c7395d2aa16ff23ed710e81928cdb6811d9db', 15231539274, 7356, 'cb5a67651f8342cec2883741ae59d89e606e50e23ce449c94c3e3b1002350e64'), 46113642336: ('5328f2dd34358378068840e53d22812a18fe805d', 15251036596, 770260, '46a9efb4e47277fd45a0bbe63dc32df411abdf9323bd615feb4be75d0a48d869')}
+          def get(path):
+              req=urllib.request.Request('https://api.github.com/repos/'+repo+path,headers={'Authorization':'Bearer '+os.environ['GH_TOKEN'],'Accept':'application/vnd.github+json','User-Agent':'HCRAF-P12R63'})
+              for i in range(4):
+                  try:
+                      with urllib.request.urlopen(req,timeout=60) as r:return json.load(r)
+                  except Exception:
+                      if i==3:raise
+                      time.sleep(2**i)
+          res={}
+          for rid,(commit,aid,size,h) in parents.items():
+              r=get('/actions/runs/'+str(rid));need(r['status']=='completed' and r['conclusion']=='success' and r['run_attempt']==1 and r['head_sha']==commit,'RUN_ORIGIN');subprocess.check_call(['git','merge-base','--is-ancestor',commit,'HEAD']);a=get('/actions/artifacts/'+str(aid));need(not a['expired'] and a['workflow_run']['id']==rid and a['workflow_run']['head_sha']==commit and a['size_in_bytes']==size and a['digest']=='sha256:'+h,'ARTIFACT_ORIGIN');res[rid]={'head_sha':commit,'artifact_id':aid,'sha256':h}
+          P('mapping_preflight/parents.json').write_text(json.dumps(res,sort_keys=True,indent=2)+'\n');print('PASS_EXACT_ARCHITECTURE_AUDIT_ANCESTRY')
+          PYCODE
+      - name: Download exact official artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for id in 15221940873 15231539274 15251036596; do
+            curl --fail --location --retry 4 --retry-all-errors --silent --show-error -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/artifacts/$id/zip" -o "inputs/github-actions-artifact-$id.zip"
+          done
+      - name: Test read-only audit guards
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd hcraf/episode/scripts/p12r63
+          python -m unittest -v test_audit
+      - name: Audit architecture mapping without scoring or training
+        shell: bash
+        run: |
+          set -euo pipefail
+          python hcraf/episode/scripts/p12r63/audit.py inputs hcraf_stage1am_f3_p12r_new_construct_confirm_v05260_sources.zip mapping_result
+          printf '%s  %s\n' '6bf8c80d98491aa410080911d2732cfe00344755d5ab491d597d710c59356ec4' 'mapping_result/MAPPING_RECEIPT.json' | sha256sum -c -
+      - name: Record science fences
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p mapping_preflight
+          printf '%s\n' 'F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null' 'No new score, threshold, model fit, simulation, confirmation or release.' > mapping_preflight/science_fences.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hcraf-f3-p12r-architecture-mapping-v05263-run-${{ github.run_id }}
+          path: |
+            mapping_result/
+            mapping_preflight/
+          if-no-files-found: error
+          retention-days: 90
