@@ -1,0 +1,206 @@
+name: HCRAF F3 P12R Direct Cost Native Pilot and Conditional DEV (v0.52.65)
+'on':
+  workflow_dispatch: null
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: hcraf-f3-p12r-direct-cost-native-v05265
+  cancel-in-progress: false
+jobs:
+  native_pilot_dev:
+    runs-on: ubuntu-24.04
+    container: ubuntu:20.04
+    timeout-minutes: 360
+    env:
+      P12R_DEV_SOURCE_SHA256: d90d0766984ee1d9d2599b69655605c0cf08d16d3369d08ca7c729c58e8bed10
+      P12T_SOURCE_SHA256: 08b76621c5cb371fe04955d42b27f1a682f883f058ec06f050c60c42724fafa1
+      P12U_SOURCE_SHA256: 469afe7567e375db8d07d16802ddde6dbf68bfd1aadd15c4f7d6ddd3761b401d
+      P12V_SOURCE_SHA256: 871bcf33b5d3ed4745ccffc0b2529900b3e0987fffdde170656544d29174cf64
+      P12S_SOURCE_SHA256: 587d792d7e7e7f1837da8df0490b6fba5a0394248917ae2f0b570bb925b594e0
+      P12R_SOURCE_SHA256: dbb12863ca83c26b687b243211aaf698986b8d6f2f7b8656cffb06278751ae30
+      V05231_SOURCE_SHA256: f45e1e1b9dfa276568e9c3b6989dfec6496e8fc7e3d86e1b30d53963b549a265
+      V05225_SOURCE_SHA256: 13ff992e6be059e0ba8f92bb1cf97f76d5c3ed78fe259cfe43b78f47c01ce287
+      V0526_SOURCE_SHA256: bc18ad86a07036250b3ec488df90e7d1936706b56185fac0a942d4ca6bc08d63
+      V05216_SOURCE_SHA256: 33b4c9d18d1f0f3cef581ce4e2b8e983295eb678d67a3939a8b4faa786fcc0b5
+      V05218_SOURCE_SHA256: e4cf3e0b0784763746c3a690a9f716f70ecb27a5a88d9ac2a31fb798fa3992fb
+      V05219_SOURCE_SHA256: 72e46581c8124e83372fb84f5bf014637d44d1c61f990cb8d0582f04de14b96f
+      V05220_SOURCE_SHA256: 000f5d89c0490c46afdc5e4d741dcf85935e193f013dd37a4ed33299b7403082
+      V05221_SOURCE_SHA256: 21f0ac48cb825a97b8deb8bc8b2377483a1140fe9ffa2e0aaa32872e26451df2
+      V05222_SOURCE_SHA256: 351a57feec078bcadf9ba207087bb9774bee0c829aac38bacc5801ae810daddf
+      P12R65_SOURCE_SHA256: 9ed6c15ac73dcb0e3c02a579ac8a90bbbf7d93b3c97057768ff853588803e8d4
+      P12R65_PREREG_SHA256: c747798391c9324867b94809c9a7e095eda081dc1bee9523be40896b3521a78a
+      P12R65_PREREG: p12r65_auth/prereg.zip
+    steps:
+    - name: Require first dispatch and no automatic repeat
+      shell: bash
+      run: 'set -euo pipefail
+
+        test "$GITHUB_RUN_ATTEMPT" = 1
+
+        test "$GITHUB_RUN_NUMBER" = 1
+
+        '
+    - name: Install historical pinned-build prerequisites
+      shell: bash
+      run: "set -euo pipefail\nexport DEBIAN_FRONTEND=noninteractive\nsed -i '/focal-backports/d' /etc/apt/sources.list\nsed -i 's#http://archive.ubuntu.com/ubuntu#http://azure.archive.ubuntu.com/ubuntu#g' /etc/apt/sources.list\nfor attempt in 1 2 3; do\n  if [ \"$attempt\" -eq 2 ]; then\n    sed -i 's#http://azure.archive.ubuntu.com/ubuntu#https://archive.ubuntu.com/ubuntu#g; s#http://security.ubuntu.com/ubuntu#https://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list\n  elif [ \"$attempt\" -eq 3 ]; then\n    sed -i 's#https://archive.ubuntu.com/ubuntu#http://archive.ubuntu.com/ubuntu#g; s#https://security.ubuntu.com/ubuntu#http://security.ubuntu.com/ubuntu#g' /etc/apt/sources.list\n  fi\n  apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 update || true\n  if apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=25 -o Acquire::https::Timeout=25 install -y --no-install-recommends git curl ca-certificates build-essential python3 python3-dev python3-setuptools\
+        \ python3-pip python3-pytest pkg-config libboost-all-dev libssl-dev libsqlite3-dev libpcap-dev libgsl-dev libprotobuf-dev protobuf-compiler libxml2-dev libxslt1-dev libevent-dev graphviz doxygen time; then exit 0; fi\ndone\nexit 1\n"
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Authenticate exact committed source and preregistration ZIP
+      shell: bash
+      run: "set -euo pipefail\ngit config --global --add safe.directory \"$GITHUB_WORKSPACE\"\ntest \"$(git rev-parse --is-shallow-repository)\" = false\nmkdir -p episode_output/p12r65_preflight p12r65_auth\npython3 - <<'PYCODE'\nimport hashlib,json,os,pathlib,stat,subprocess,zipfile\nP=pathlib.Path\ndef need(c,m):\n if not c:raise RuntimeError(m)\narchives=[('hcraf_stage1am_f3_p12r_dev_collection_v05246_sources.zip','P12R_DEV_SOURCE_SHA256','HCRAF_F3_P12R_DEV_SOURCE_SHA256_v05246.json',False),('hcraf_stage1am_f3_p12r_direct_cost_native_v05265_sources.zip','P12R65_SOURCE_SHA256','HCRAF_F3_P12R_DIRECT_COST_NATIVE_SOURCE_SHA256_v05265.json',True)]\nfor name,env,mn,native in archives:\n raw=P(name).read_bytes();need(hashlib.sha256(raw).hexdigest()==os.environ[env] and subprocess.check_output(['git','show','HEAD:'+name])==raw,'ARCHIVE_SHA:'+name)\n with zipfile.ZipFile(name) as z:\n  m=json.loads(z.read(mn));need(z.testzip() is None and len(z.namelist())==len(set(z.namelist())) and set(z.namelist())==set(m['files'])|{mn},'MANIFEST:'+name)\n\
+        \  need(all(m[k] is False for k in ('F3_ready','GO_FREEZE','training_ready')),'LOCK:'+name)\n  if native:need(m['pilot_cases_authorized']==30 and m['development_cases_conditional']==120 and m['confirmation_cases_authorized']==m['model_fits_authorized']==0 and m['prereg_sha256']==os.environ['P12R65_PREREG_SHA256'] and m['Congestion'] is None and m['FutureCongestion'] is None,'NATIVE_LOCK')\n  else:need(m['confirmation_cases_authorized']==0 and m['diagnostic_rows_authorized']==0,'HISTORICAL_BUILD_ONLY')\n  for n,h in m['files'].items():\n   q=pathlib.PurePosixPath(n);need(q.parts[:2]==('hcraf','episode') and '..' not in q.parts and not q.is_absolute() and chr(92) not in n and not stat.S_ISLNK(z.getinfo(n).external_attr>>16),'PATH');b=z.read(n);d=P(n);need(hashlib.sha256(b).hexdigest()==h and not d.exists(),'MEMBER:'+n);d.parent.mkdir(parents=True,exist_ok=True);d.write_bytes(b)\n print('PASS_AUTHENTIC_SOURCE',name)\nPYCODE\ncurl --fail --silent --show-error --location --retry 3 --max-time\
+        \ 180 -H \"Authorization: Bearer $GH_TOKEN\" -H 'Accept: application/vnd.github+json' 'https://api.github.com/repos/parhamarjomand-hub/hcraf-ndnsim/actions/artifacts/15250979168/zip' -o \"$P12R65_PREREG\"\necho \"$P12R65_PREREG_SHA256  $P12R65_PREREG\" | sha256sum -c -\n"
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Audit historical seed and stream namespace and official run ancestry
+      shell: bash
+      run: 'set -euo pipefail
+
+        python3 hcraf/episode/scripts/p12r65/provenance.py episode_output/p12r65_preflight/history.json
+
+        '
+      env:
+        GH_TOKEN: ${{ github.token }}
+    - name: Run locked contract and audit tests
+      shell: bash
+      run: 'set -euo pipefail
+
+        PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s hcraf/episode/scripts/p12r65 -p test_native.py -v 2>&1 | tee episode_output/p12r65_preflight/tests.log
+
+        '
+    - name: Restore immutable original science-lock receipt
+      uses: actions/download-artifact@v4
+      with:
+        name: hcraf-f3-future-path-queue-pressure-prereg-v0520
+        run-id: '43567814962'
+        github-token: ${{ github.token }}
+        path: episode_output/v0526_preflight/lock_artifact
+    - name: Restore original P12K prereg receipt
+      uses: actions/download-artifact@v4
+      with:
+        name: hcraf-f3-p12k-prereg-v05225-run-45195251299
+        run-id: '45195251299'
+        github-token: ${{ github.token }}
+        path: p12v_auth_p12k_receipt
+    - name: Retrieve only the P12Z causal QC receipt artifact, not diagnostic rows
+      uses: actions/download-artifact@v4
+      with:
+        name: hcraf-f3-p12z-independent-native-nack-drop-causal-witness-v05245-run-45950796539
+        run-id: '45950796539'
+        github-token: ${{ github.token }}
+        path: p12r_auth_p12z
+    - name: Authenticate and restore immutable build inputs
+      shell: bash
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: 'set -euo pipefail
+
+        python3 hcraf/episode/scripts/restore_stage1am_f3_p12r_dev_v05246.py 2>&1 | tee episode_output/p12r65_preflight/restore.log
+
+        '
+    - name: Compile pinned native implementation without running simulations
+      shell: bash
+      run: 'set -euo pipefail
+
+        bash hcraf/episode/scripts/build_stage1am_f3_p12r_direct_cost_v05265.sh > episode_output/p12r65_preflight/build.log 2>&1 || { tail -100 episode_output/p12r65_preflight/build.log; exit 1; }
+
+        tail -30 episode_output/p12r65_preflight/build.log
+
+        '
+    - name: Seal implementation, executable and provenance before first pilot simulation
+      shell: bash
+      run: 'set -euo pipefail
+
+        python3 - <<''PYCODE''
+
+        import pathlib,json,hashlib,os
+
+        P=pathlib.Path
+
+        h=lambda p:hashlib.sha256(P(p).read_bytes()).hexdigest()
+
+        a=json.loads(P(''episode_output/p12r65_preflight/history.json'').read_text())
+
+        assert a[''status'']==''PASS_DECLARED_SEED_STREAM_NAMESPACE'' and not a[''hits'']
+
+        p=P(''hcraf/episode/scripts/p12r65/IMPLEMENTATION_LOCK.json'');l=json.loads(p.read_text());assert l[''confirmation_cases_authorized'']==0 and l[''F3_ready''] is False
+
+        q=dict(status=''PASS_IMPLEMENTATION_BUILD_LOCK_ONLY'',source_archive_sha256=os.environ[''P12R65_SOURCE_SHA256''],implementation_lock_sha256=h(p),history_sha256=h(''episode_output/p12r65_preflight/history.json''),binary_sha256=h(''episode_sources/ns-3/build/scratch/hcraf-stage1am-f3-p12r-direct-cost-v05265''),prereg_sha256=os.environ[''P12R65_PREREG_SHA256''],run_id=os.environ[''GITHUB_RUN_ID''],head_sha=os.environ[''GITHUB_SHA''],simulations=0,F3_ready=False,GO_FREEZE=False,training_ready=False,Congestion=None,FutureCongestion=None)
+
+        P(''episode_output/p12r65_preflight/IMPLEMENTATION_RECEIPT.json'').write_text(json.dumps(q,sort_keys=True,indent=2)+''\n'')
+
+        PYCODE
+
+        '
+    - name: Execute and audit all 30 engineering pilot cases
+      shell: bash
+      run: 'set -euo pipefail
+
+        PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/p12r65/audit.py --prereg "$P12R65_PREREG" --ns3 episode_sources/ns-3 --out episode_output/p12r65_pilot --partition pilot 2>&1 | tee episode_output/p12r65_preflight/pilot.log
+
+        '
+    - name: Execute 120 DEV cases only after complete pilot pass and freeze normalization
+      shell: bash
+      run: 'set -euo pipefail
+
+        PYTHONDONTWRITEBYTECODE=1 python3 hcraf/episode/scripts/p12r65/audit.py --prereg "$P12R65_PREREG" --ns3 episode_sources/ns-3 --out episode_output/p12r65_dev --partition development --pilot episode_output/p12r65_pilot 2>&1 | tee episode_output/p12r65_preflight/dev.log
+
+        '
+    - name: Verify final partition seals and normalization only
+      shell: bash
+      run: 'set -euo pipefail
+
+        PYTHONPATH=hcraf/episode/scripts/p12r65 python3 - <<''PYCODE''
+
+        import audit as a,json,pathlib
+
+        P=pathlib.Path;p=P(''episode_output/p12r65_pilot'');d=P(''episode_output/p12r65_dev'');r=a.verify_partition(p,''pilot'');s=a.verify_partition(d,''development'');assert s[''pilot_receipt_sha256'']==a.digest(p/''PARTITION_RECEIPT.json'') and s[''normalization_sha256'']==a.digest(d/''NORMALIZATION.json'') and s[''model_fits'']==0 and not s[''AP_computed''] and s[''confirmation_cases'']==0 and s[''official_F3_labels_constructed'']==0
+
+        print(a.STATUS)
+
+        PYCODE
+
+        '
+    - name: Always record scientific fences
+      shell: bash
+      run: 'set -euo pipefail
+
+        mkdir -p episode_output/p12r65_preflight
+
+        printf ''%s\n'' "RUN=$GITHUB_RUN_ID SHA=$GITHUB_SHA VERSION=v0.52.65" ''F3_ready=false GO_FREEZE=false training_ready=false Congestion=null FutureCongestion=null'' ''Engineering pilot then conditional DEV normalization only; no AP, fitting, confirmation, heldout or official labels. No automatic repeat after failure.'' > episode_output/p12r65_preflight/science_fences.log
+
+        '
+      if: always()
+    - uses: actions/upload-artifact@v4
+      if: success()
+      with:
+        name: hcraf-f3-p12r-direct-cost-native-success-v05265-run-${{ github.run_id }}
+        path: 'episode_output/p12r65_preflight/
+
+          episode_output/p12v_native_preflight/
+
+          episode_output/p12r65_pilot/
+
+          episode_output/p12r65_dev/
+
+          '
+        if-no-files-found: error
+        retention-days: 90
+    - uses: actions/upload-artifact@v4
+      if: failure()
+      with:
+        name: hcraf-f3-p12r-direct-cost-native-failure-v05265-run-${{ github.run_id }}
+        path: 'episode_output/p12r65_preflight/
+
+          episode_output/p12v_native_preflight/
+
+          episode_output/p12r65_pilot/
+
+          episode_output/p12r65_dev/
+
+          '
+        if-no-files-found: warn
+        retention-days: 90
